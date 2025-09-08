@@ -4,7 +4,7 @@ import music21 as m21
 
 # load the list of any artists files
 BASE_MUSIC_PATH = '../data/music/'
-ISOLATE_MIDI_TRACKS = '../midi/'
+ISOLATE_MIDI_TRACKS = '../data/midi/'
 ARTIST_NAME = 'Guns_N_Roses'
 
 gnr_midi_files = [file for file in os.listdir(BASE_MUSIC_PATH + ARTIST_NAME)]
