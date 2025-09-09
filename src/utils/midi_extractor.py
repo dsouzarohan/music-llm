@@ -3,7 +3,7 @@ import os
 import music21 as m21
 
 # load the list of any artists files
-BASE_MUSIC_PATH = '../data/music/'
+BASE_MUSIC_PATH = '../../data/music/'
 ISOLATE_MIDI_TRACKS = '../data/midi/'
 ARTIST_NAME = 'Guns_N_Roses'
 
