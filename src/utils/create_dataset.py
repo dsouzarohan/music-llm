@@ -7,7 +7,7 @@ from pathlib import Path
 class GuitarDataset(Dataset):
     def __init__(self, token_dir, block_size=128, stride=None, file_list=None):
         self.block_size = block_size
-        self.stride = stride or block_size // 2
+        self.stride = stride or block_size // 2 # overlap between two input example sequences
         self.samples = []  # this actually stores the dataset's data
         self.tokens = 0
 
