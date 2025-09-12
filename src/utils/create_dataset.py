@@ -5,16 +5,14 @@ from pathlib import Path
 
 
 class GuitarDataset(Dataset):
-    def __init__(self, token_dir, block_size=128, stride=None, file_list=None):
+    def __init__(self, block_size=128, stride=None, file_list=None):
         self.block_size = block_size
         self.stride = stride or block_size // 2 # overlap between two input example sequences
         self.samples = []  # this actually stores the dataset's data
         self.tokens = 0
 
         # preparing path files for datasets
-        token_files = sorted(Path(token_dir).glob("*.json"))
-        if file_list is not None:
-            token_files = [Path(t) for t in file_list]
+        token_files = [Path(t) for t in file_list]
 
         # reading json from token files
         for tf in token_files:
