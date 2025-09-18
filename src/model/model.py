@@ -32,7 +32,7 @@ class Head(nn.Module):
         k = self.key(x)
         v = self.value(x)
 
-        wei = q @ k.transpose(-2, -1) * self.head_size ** -0.5  # divide by root of dk as per AIAYN
+        wei = q @ k.transpose(-2, -1) * (self.head_size ** -0.5)  # divide by root of dk as per AIAYN
         # wei here is the attention scores matrix, that ends up being a (T, T) matrix
         # this is why attention computation grows quadratically with context window
         # O(T^2)
@@ -88,13 +88,9 @@ class Block(nn.Module):
         self.ln1 = nn.LayerNorm(n_embd)
         self.ln2 = nn.LayerNorm(n_embd)
 
-    def forward(self, x):
-        x = self.ln1(x)
-        x = x + self.mmha(x)  # skip connections
-
-        x = self.ln2(x)
-        x = x + self.ffwd(x)  # skip connections
-        # print("Block forward", x)
+    def forward(self, x):# recommended
+        x = x + self.mmha(self.ln1(x))
+        x = x + self.ffwd(self.ln2(x))
         return x
 
 
