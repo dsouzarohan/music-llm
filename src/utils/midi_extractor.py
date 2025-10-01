@@ -4,7 +4,7 @@ import music21 as m21
 
 # load the list of any artists files
 BASE_MUSIC_PATH = '../../data/music/'
-ISOLATE_MIDI_TRACKS = '../data/midi/'
+ISOLATE_MIDI_TRACKS = '../../data/midi/'
 ARTIST_NAME = 'Guns_N_Roses'
 
 gnr_midi_files = [file for file in os.listdir(BASE_MUSIC_PATH + ARTIST_NAME)]
@@ -26,7 +26,7 @@ for file in gnr_midi_files:
             first_instrument = instruments[0]
             if "Electric Guitar" in (first_instrument.instrumentName or ""):
                 electric_guitar_mid_name = f'{song_name} {part.partName}.mid'.replace(' ','_')
-                print(electric_guitar_mid_name)
+                print("Song - ", electric_guitar_mid_name)
                 part.write('midi', fp=f'{ISOLATE_MIDI_TRACKS}{electric_guitar_mid_name}')
 
 
