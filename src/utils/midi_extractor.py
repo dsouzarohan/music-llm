@@ -1,22 +1,32 @@
 # TODO: this will ideally be smartly automated in the future, for now, manual work
 import os
+import shutil
+
 import music21 as m21
+from pathlib import Path
 
 # load the list of any artists files
 BASE_MUSIC_PATH = '../../data/music/'
 ISOLATE_MIDI_TRACKS = '../../data/midi/'
 ARTIST_NAME = 'Guns_N_Roses'
 
-gnr_midi_files = [file for file in os.listdir(BASE_MUSIC_PATH + ARTIST_NAME)]
-print(len(gnr_midi_files), "GnR songs")
+midi_folder = Path(ISOLATE_MIDI_TRACKS)
 
-gnr_midis = []
+# clean up midi folder before extraction
+if midi_folder.exists():
+    shutil.rmtree(midi_folder)
+midi_folder.mkdir(parents=True, exist_ok=True)
 
-for file in gnr_midi_files:
+artist_midi_files = [file for file in os.listdir(BASE_MUSIC_PATH + ARTIST_NAME)]
+print(len(artist_midi_files), f'{ARTIST_NAME} MIDI files found')
+
+artist_midis = []
+
+for file in artist_midi_files:
     song_name = file.split('.mid')[0].replace('_',' ')
     midi = m21.converter.parse(f'{BASE_MUSIC_PATH}{ARTIST_NAME}/{file}')
     midi.songName = song_name
-    gnr_midis.append(midi)
+    artist_midis.append(midi)
 
     # partitions by instrument, so multiple guitars can possibly be merged
     songs = m21.instrument.partitionByInstrument(midi)
