@@ -41,7 +41,7 @@ for folder in [splits_folder, train_midi_folder, val_midi_folder, augmented_fold
 all_orig_midis = list(midi_folder.glob("*.mid"))
 random.shuffle(all_orig_midis)
 
-TRAINING_SPLIT = 0.8
+TRAINING_SPLIT = 0.6
 split = int(len(all_orig_midis) * TRAINING_SPLIT)
 
 train_midis = all_orig_midis[:split]

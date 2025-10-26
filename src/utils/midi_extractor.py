@@ -33,18 +33,11 @@ for file in artist_midi_files:
     for part in songs.parts:
         instruments = part.getElementsByClass(m21.instrument.Instrument)
         if instruments:
-            first_instrument = instruments[0]
-            if "Electric Guitar" in (first_instrument.instrumentName or ""):
-                electric_guitar_mid_name = f'{song_name} {part.partName}.mid'.replace(' ','_')
-                print("Song - ", electric_guitar_mid_name)
-                part.write('midi', fp=f'{ISOLATE_MIDI_TRACKS}{electric_guitar_mid_name}')
+            # instruments holds all possible instruments used to record the current song
+            for instrument in instruments:
+                # any guitar track can be used for now as it is difficult whether the track itself is a rhythm/lead/solo/acoustic track
+                if instrument and "guitar" in (instrument.instrumentName or "").lower():
+                    guitar_midi_name = f'{song_name} {part.partName}.mid'.replace(' ','_').replace('/','')
+                    print("Song - ", guitar_midi_name)
+                    part.write('midi', fp=f'{ISOLATE_MIDI_TRACKS}{guitar_midi_name}')
 
-
-    # TODO: figure out how we can isolate by raw MIDI tracks
-    # for i, part in enumerate(midi.parts):
-    #     instruments = part.getElementsByClass(m21.instrument.Instrument)
-    #
-    #     if instruments:
-    #         print("Instrument", instruments[0])
-    #         for instrument in instruments:
-    #             print(instrument)

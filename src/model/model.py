@@ -23,31 +23,45 @@ class Head(nn.Module):
         self.query = nn.Linear(n_embd, head_size, bias=False)
         self.key = nn.Linear(n_embd, head_size, bias=False)
         self.value = nn.Linear(n_embd, head_size, bias=False)
-        self.register_buffer("tril", torch.tril(torch.ones(block_size, block_size)))
-        self.dropout = nn.Dropout(dropout)
+
+        # self.register_buffer("tril", torch.tril(torch.ones(block_size, block_size)))
+        self.dropout_p = dropout
+        self.block_size = block_size
 
     def forward(self, x):
+        # x: [B, T, C], project to head_dim
         B, T, C = x.shape
-        q = self.query(x)
-        k = self.key(x)
-        v = self.value(x)
+        q = self.query(x)# [B, T, Dh]
+        k = self.key(x)# [B, T, Dh]
+        v = self.value(x)# [B, T, Dh]
 
-        wei = q @ k.transpose(-2, -1) * (self.head_size ** -0.5)  # divide by root of dk as per AIAYN
-        # wei here is the attention scores matrix, that ends up being a (T, T) matrix
-        # this is why attention computation grows quadratically with context window
-        # O(T^2)
-        wei = wei.masked_fill(self.tril[:T, :T] == 0, float("-inf"))
-        wei = F.softmax(wei, dim=-1)
-        wei = self.dropout(wei)
-        out = wei @ v
-        return out
+        # Writing out a hand rolled QKV attention to PyTorch's inbuilt Scaled Dot-Product Attention (SDPA) unlocks FlashAttention
+        # Manually implementing the softmax(QK^T)V is a great way to learn attention, but can become a memory bottleneck
+
+        # wei = q @ k.transpose(-2, -1) * (self.head_size ** -0.5)  # divide by root of dk as per AIAYN
+        # # wei here is the attention scores matrix, that ends up being a (T, T) matrix
+        # # this is why attention computation grows quadratically with context window
+        # # O(T^2)
+        # wei = wei.masked_fill(self.tril[:T, :T] == 0, float("-inf"))
+        # wei = F.softmax(wei, dim=-1)
+        # wei = self.dropout(wei)
+        # out = wei @ v
+
+        # we will use torch's SDPA here
+        out = F.scaled_dot_product_attention(
+            q, k, v,
+            attn_mask=None,
+            dropout_p=self.dropout_p if self.training else 0.0,
+            is_causal=True # setting this to true ensures transformers don't peek into the future, only depend on past tokens
+        )
+        return out # returns a single attention head output [B, T, Dh]
 
 
 class MultiHeadAttention(nn.Module):
     def __init__(self, num_heads, n_embd, dropout, block_size):
         super().__init__()
         self.num_heads = num_heads
-        self.head_size = n_embd // num_heads
+        self.head_size = n_embd // num_heads # try to keep head_size/head_dim = 64/96/128
 
         self.heads = nn.ModuleList([
             Head(self.head_size, n_embd, block_size, dropout) for _ in range(self.num_heads)
@@ -65,10 +79,11 @@ class MultiHeadAttention(nn.Module):
 class FeedForward(nn.Module):
     def __init__(self, n_embd, dropout):
         super().__init__()
+        self.mlp_ratio = 3 # known as the MLP ratio, how much we expand the dimensions in the MLP before bring it back down
         self.mlp = nn.Sequential(
-            nn.Linear(n_embd, n_embd * 4),
+            nn.Linear(n_embd, n_embd * self.mlp_ratio),
             nn.ReLU(),
-            nn.Linear(n_embd * 4, n_embd),
+            nn.Linear(n_embd * self.mlp_ratio, n_embd),
             nn.Dropout(dropout)
         )
         self.dropout = nn.Dropout(dropout)
