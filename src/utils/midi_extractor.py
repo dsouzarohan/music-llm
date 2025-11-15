@@ -8,7 +8,7 @@ from pathlib import Path
 # load the list of any artists files
 BASE_MUSIC_PATH = '../../data/music/'
 ISOLATE_MIDI_TRACKS = '../../data/midi/'
-ARTIST_NAME = 'Guns_N_Roses'
+ARTIST_NAME = 'The_Beatles'
 
 midi_folder = Path(ISOLATE_MIDI_TRACKS)
 
