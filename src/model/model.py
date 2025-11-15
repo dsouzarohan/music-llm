@@ -1,7 +1,6 @@
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
-
 from src.utils.hyperparameters import BATCH_SIZE, BLOCK_SIZE, EMBEDDING_DIM, N_LAYER, N_HEAD, DROPOUT, VOCAB_SIZE
 
 
@@ -56,6 +55,61 @@ class Head(nn.Module):
         )
         return out # returns a single attention head output [B, T, Dh]
 
+class RelativeHead(nn.Module):
+    def __init__(self, head_size, n_embd, block_size, dropout):
+        super().__init__()
+
+        self.block_size = block_size
+        self.head_size = head_size
+        self.n_embd = n_embd
+        self.dropout_p = dropout
+
+        self.query = nn.Linear(n_embd, head_size, bias=False) # (C, Dh)
+        self.key = nn.Linear(n_embd, head_size, bias=False) # (C, Dh)
+        self.value = nn.Linear(n_embd, head_size, bias=False)
+
+        # scalar relative bias per distance
+        self.rel_bias = nn.Embedding(2 * block_size - 1, 1) # (2*T - 1, 1)
+        self.dropout = nn.Dropout(self.dropout_p)
+
+        self.register_buffer("tril", torch.tril(torch.ones(block_size, block_size)))
+
+    def forward(self, x):
+        B, T, C = x.shape
+        # (B, T, C) @ (C, Dh) = (B, T, Dh)
+        q = self.query(x) # (B, T, Dh)
+        k = self.query(x) # (B, T, Dh)
+        v = self.query(x) # (B, T, Dh)
+
+        # build relative distance bias
+        positions = torch.arange(T, device=x.device) # (T)
+        rel = positions[None, :] - positions[:, None] # (T,T) where (i,j) i.e each pair is just i-j
+
+        max_rel = self.block_size - 1
+        rel_clipped = rel.clamp(-max_rel, max_rel) # (T, T)
+        rel_indices = rel_clipped + max_rel # (T, T) -> [0..2 * block_size - 2] # shifted by T - 1
+
+        bias = self.rel_bias(rel_indices).squeeze(-1) # (T, T)
+        bias = bias.unsqueeze(0) # (1, T, T), will broadcast over B
+
+        # standard attention, but with a bias
+        scores = q @ k.transpose(-2, -1) # (B, T, Dh) @ (B, Dh, T) = (B,T,T)
+        scores = scores * (self.head_size ** -0.5)
+
+        # add relative bias to the scores
+        scores = scores + bias # (B, T, T) + (1, T, T) -> B x (1, T, T) -> (B, T, T)
+
+        # causal mask
+        scores = scores.masked_fill(self.tril[:T, :T] == 0, float("-inf"))
+
+        # softmax -> attention weights
+        attn = F.softmax(scores, dim=-1)
+        attn = self.dropout(attn)
+
+        # weighted sum of values
+        out = attn @ v # (B, T, T) @ (B, T, Dh) = (B, T, Dh)
+        return out
+
 
 class MultiHeadAttention(nn.Module):
     def __init__(self, num_heads, n_embd, dropout, block_size):
@@ -64,7 +118,7 @@ class MultiHeadAttention(nn.Module):
         self.head_size = n_embd // num_heads # try to keep head_size/head_dim = 64/96/128
 
         self.heads = nn.ModuleList([
-            Head(self.head_size, n_embd, block_size, dropout) for _ in range(self.num_heads)
+            RelativeHead(self.head_size, n_embd, block_size, dropout) for _ in range(self.num_heads)
         ])
         self.proj = nn.Linear(n_embd, n_embd)
         self.dropout = nn.Dropout(dropout)
