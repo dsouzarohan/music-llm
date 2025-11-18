@@ -9,7 +9,7 @@ class GuitarDataset(Dataset):
         self.block_size = block_size
         self.stride = stride or block_size // 2 # overlap between two input example sequences
         self.samples = []  # this actually stores the dataset's data
-        self.tokens = 0
+        self.total_tokens = 0
 
         # preparing path files for datasets
         token_files = [Path(t) for t in file_list]
@@ -22,7 +22,7 @@ class GuitarDataset(Dataset):
 
             # build windows
             L = len(ids)
-            self.tokens += L
+            self.total_tokens += L
 
             if L <= block_size + 1: # need to wait for first block_size+1 tokens to create fist sequence
                 continue
