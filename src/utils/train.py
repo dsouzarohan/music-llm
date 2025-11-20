@@ -41,7 +41,7 @@ def parse_args():
     parser = argparse.ArgumentParser()
 
     parser.add_argument("--data_root", type=str, default="../../data/")
-    parser.add_argument("--epochs", type=str, default=20)
+    parser.add_argument("--epochs", type=int, default=20)
     parser.add_argument("--batch_size", type=int, default=BATCH_SIZE)
     parser.add_argument("--checkpoint_dir", type=str, default="../../data/checkpoints")
     parser.add_argument("--use_guitar_ds", action="store_true", help="Use GuitarDataset instead of RandomGuitarWindowDataset")

@@ -69,7 +69,8 @@ class RelativeHead(nn.Module):
         self.value = nn.Linear(n_embd, head_size, bias=False)
 
         # scalar relative bias per distance
-        self.rel_bias = nn.Embedding(2 * block_size - 1, 1) # (2*T - 1, 1)
+        # self.rel_bias = nn.Embedding(2 * block_size - 1, head_size) # (2*T - 1, dH)
+        self.rel_bias = nn.Embedding(block_size, head_size) # (T, dH)
         self.dropout = nn.Dropout(self.dropout_p)
 
         self.register_buffer("tril", torch.tril(torch.ones(block_size, block_size)))
@@ -81,23 +82,28 @@ class RelativeHead(nn.Module):
         k = self.query(x) # (B, T, Dh)
         v = self.query(x) # (B, T, Dh)
 
-        # build relative distance bias
-        positions = torch.arange(T, device=x.device) # (T)
-        rel = positions[None, :] - positions[:, None] # (T,T) where (i,j) i.e each pair is just i-j
+        # Compute relative content scores (Q @ E)
+        # In this matrix, columns represent "Relative Distances", not absolute keys:
+        E = self.rel_bias.weight # (T, Dh)
+        s_rel = q @ E.transpose(-2, -1) # (B, T, Dh) @ (Dh, T) = (B, T, T)
 
-        max_rel = self.block_size - 1
-        rel_clipped = rel.clamp(-max_rel, max_rel) # (T, T)
-        rel_indices = rel_clipped + max_rel # (T, T) -> [0..2 * block_size - 2] # shifted by T - 1
+        # Skewing (Pad -> Resize -> Slice)
+        # pad 1 column to the left
+        s_rel = F.pad(s_rel, (1,0)) # (B, T, T) -> (B, T, T+1)
 
-        bias = self.rel_bias(rel_indices).squeeze(-1) # (T, T)
-        bias = bias.unsqueeze(0) # (1, T, T), will broadcast over B
+        # reshape to shift rows
+        s_rel = s_rel.view(B, T+1, T)
+
+        # slice to remove the "overflow" row and align diagonals
+        # we drop the first row here (index 0)
+        s_rel = s_rel[:, 1:, :] # (B, T+1, T) -> (B, T, T)
 
         # standard attention, but with a bias
         scores = q @ k.transpose(-2, -1) # (B, T, Dh) @ (B, Dh, T) = (B,T,T)
         scores = scores * (self.head_size ** -0.5)
 
         # add relative bias to the scores
-        scores = scores + bias # (B, T, T) + (1, T, T) -> B x (1, T, T) -> (B, T, T)
+        scores = scores + s_rel # (B, T, T) + (B, T, T) -> (B, T, T)
 
         # causal mask
         scores = scores.masked_fill(self.tril[:T, :T] == 0, float("-inf"))
