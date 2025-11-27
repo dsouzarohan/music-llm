@@ -10,6 +10,8 @@ grep "success" midi_extraction_log.csv | cut -d',' -f1 | sort | uniq -c # how ma
 grep "no_guitar_tracks" midi_extraction_log.csv | cut -d',' -f1 | sort | uniq -c # how many no guitar tracks per artist
 grep "_error" midi_extraction_log.csv | cut -d',' -f1 | sort | uniq -c # how many errors per artist
 cut -d',' -f1,2 midi_extraction_log.csv | sort | uniq | cut -d',' -f1 | sort | uniq -c # count how many songs each artist attempted
+awk -F',' '/_error/ && $0 !~ /no_guitar_tracks/ { count[$1]++ }
+           END { for (a in count) print count[a], a }' midi_extraction_log.csv # non "no_guitar_tracks" errors
 
 
 # Error/status distribution
