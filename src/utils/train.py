@@ -48,6 +48,15 @@ def parse_args():
     parser.add_argument("--save_every", type=int, default=0, help="Save checkpoint every N epochs (0 = only best + last)")
     parser.add_argument("--seed", type=int, default=42)
 
+    # Hyperparameters arguments (defaults loaded from src.utils.hyperparameters)
+    parser.add_argument("--block_size", type=int, default=BLOCK_SIZE, help="Context window size")
+    parser.add_argument("--embedding_dim", type=int, default=EMBEDDING_DIM, help="Embedding dimension (n_embd)")
+    parser.add_argument("--n_layer", type=int, default=N_LAYER, help="Number of transformer layers")
+    parser.add_argument("--n_head", type=int, default=N_HEAD, help="Number of attention heads")
+    parser.add_argument("--dropout", type=float, default=DROPOUT, help="Dropout rate")
+    parser.add_argument("--vocab_size", type=int, default=VOCAB_SIZE, help="Vocabulary size")
+    parser.add_argument("--learning_rate", type=float, default=LEARNING_RATE, help="Learning rate")
+
     return parser.parse_args()
 
 def main():
@@ -74,16 +83,15 @@ def main():
     # define hyperparameters
     # ----------------------
 
+    # Now using values from args (which default to the imports if not specified)
     batch_size = args.batch_size
-
-    block_size = BLOCK_SIZE
-    n_embd = EMBEDDING_DIM
-    vocab_size = VOCAB_SIZE
-    n_layer = N_LAYER
-    n_head = N_HEAD
-    dropout = DROPOUT
-
-    learning_rate = LEARNING_RATE
+    block_size = args.block_size
+    n_embd = args.embedding_dim
+    vocab_size = args.vocab_size
+    n_layer = args.n_layer
+    n_head = args.n_head
+    dropout = args.dropout
+    learning_rate = args.learning_rate
 
     # -------------
     # device
@@ -136,8 +144,9 @@ def main():
         val_ds = RandomGuitarSeqDataset(block_size=block_size, epoch_len=400, file_list=val_files)
 
 
-    train_dl = DataLoader(train_ds, batch_size=32, shuffle=True, drop_last=True)
-    val_dl = DataLoader(val_ds, batch_size=32, shuffle=True, drop_last=True)
+    # Use the batch_size variable from args or default
+    train_dl = DataLoader(train_ds, batch_size=batch_size, shuffle=True, drop_last=True)
+    val_dl = DataLoader(val_ds, batch_size=batch_size, shuffle=True, drop_last=True)
 
     print("Training tokens count:", train_dl.dataset.total_tokens)
     print("Validation tokens count:", val_dl.dataset.total_tokens)
