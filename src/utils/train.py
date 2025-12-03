@@ -22,7 +22,8 @@ from src.utils.hyperparameters import (
     N_HEAD,
     DROPOUT,
     VOCAB_SIZE,
-    LEARNING_RATE
+    LEARNING_RATE,
+    MICRO_BATCH_SIZE
 )
 
 # -------
@@ -43,6 +44,7 @@ def parse_args():
     parser.add_argument("--data_root", type=str, default="../../data/")
     parser.add_argument("--epochs", type=int, default=20)
     parser.add_argument("--batch_size", type=int, default=BATCH_SIZE)
+    parser.add_argument("--micro_batch_size", type=int, default=MICRO_BATCH_SIZE)
     parser.add_argument("--checkpoint_dir", type=str, default="../../data/checkpoints")
     parser.add_argument("--use_guitar_ds", action="store_true", help="Use GuitarDataset instead of RandomGuitarWindowDataset")
     parser.add_argument("--save_every", type=int, default=0, help="Save checkpoint every N epochs (0 = only best + last)")
@@ -92,6 +94,8 @@ def main():
     n_head = args.n_head
     dropout = args.dropout
     learning_rate = args.learning_rate
+    micro_batch_size = args.micro_batch_size
+    grad_accum_steps = batch_size // micro_batch_size
 
     # -------------
     # device
@@ -145,8 +149,8 @@ def main():
 
 
     # Use the batch_size variable from args or default
-    train_dl = DataLoader(train_ds, batch_size=batch_size, shuffle=True, drop_last=True)
-    val_dl = DataLoader(val_ds, batch_size=batch_size, shuffle=True, drop_last=True)
+    train_dl = DataLoader(train_ds, batch_size=micro_batch_size, shuffle=True, drop_last=True)
+    val_dl = DataLoader(val_ds, batch_size=micro_batch_size * 2, shuffle=True, drop_last=True) # validation dataset loader can handle slightly larger batches since no gradients are stored
 
     print("Training tokens count:", train_dl.dataset.total_tokens)
     print("Validation tokens count:", val_dl.dataset.total_tokens)
@@ -158,6 +162,17 @@ def main():
     model = MusicTransformer(
         vocab_size, n_embd, n_head, n_layer, block_size, dropout
     ).to(device)
+    print("Launching MusicTransformer model with following hyperparameters")
+    print("Vocabulary (number of different tokens)", vocab_size)
+    print("Token embedding dimensionality", n_embd)
+    print("Number of layers", n_layer)
+    print("Number of attention heads", n_head)
+    print("Dropout", dropout)
+    print(f"Setting Transformer context window to {block_size}, with {batch_size} batch(es) and with a micro batch size of {micro_batch_size}")
+
+    if hasattr(torch, "compile"):
+        print("Compiling model for GPU")
+        model = torch.compile(model)
 
     # AdamW and scaler
     optimizer = torch.optim.AdamW(model.parameters(),
@@ -179,27 +194,45 @@ def main():
     best_val_loss = float("inf")
 
     for epoch in range(epochs):
-        # train
-        for x, y in train_dl:
-            x , y = x.to(device), y.to(device)
-            optimizer.zero_grad(set_to_none = True)
+        model.train()
+        optimizer.zero_grad(set_to_none=True)
 
-            # using torch.autocast here with device_Type to avoid backend specific contexts
+        train_loss_accum = 0.0
+        for step, (x, y) in enumerate(train_dl):
+            x , y = x.to(device), y.to(device)
+
+            # Using torch.autocast here with device_Type to avoid backend specific contexts
+            # Forward pass with autocast
             with torch.amp.autocast('cuda', dtype=amp_dtype, enabled=torch.cuda.is_available()):
                 logits, loss = model(x, y)
+                loss = loss / grad_accum_steps # scale loss by accumulation steps so gradients average out correctly
 
+            # Backward pass (accumulate the gradients)
             if use_amp and amp_dtype == torch.float16:
-                # FP16 path: scale, unscale before clopping, then step
+                # FP16 path: just scale
+                # optimiser steps will be done at the end
                 scaler.scale(loss).backward()
-                torch.nn.utils.clip_grad_norm(model.parameters(), 1.0)
-                scaler.step(optimizer)
-                scaler.update()
-
             else:
                 # BF16 / no-amp path:
                 loss.backward()
-                torch.nn.utils.clip_grad_norm(model.parameters(), 1.0)
-                optimizer.step()
+
+            # Accumulate loss
+            train_loss_accum += loss.item() * grad_accum_steps
+
+            # Step optimizer (only even N steps)
+            is_last_step = (step + 1) == len(train_dl)
+            if (step + 1) % grad_accum_steps == 0 or is_last_step:
+                if use_amp and amp_dtype == torch.float16:
+                    scaler.unscale_(optimizer)
+                    torch.nn.utils.clip_grad_norm(model.parameters(), 1.0)
+                    scaler.step(optimizer)
+                    scaler.update()
+                else:
+                    torch.nn.utils.clip_grad_norm(model.parameters(), 1.0)
+                    optimizer.step()
+
+                # Resets gradients ONLY after the step, or else we will lose our gradients
+                optimizer.zero_grad(set_to_none=True)
 
         # ----- validate ------
 
@@ -281,4 +314,5 @@ def main():
     print("Training finished")
 
 if __name__ == "__main__":
+    # print("Test")
     main()
