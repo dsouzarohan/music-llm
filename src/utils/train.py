@@ -254,10 +254,13 @@ def main():
         improv_ratio = V / ppl
         delta_nats = lnV - avg_loss
 
+        num_train_steps = len(train_dl)
+        avg_train_loss = train_loss_accum / num_train_steps
+
         # TODO: understand these metrics in depth
         print(
             f"epoch {epoch:03d} "
-            f"train {loss.item():.4f} "
+            f"train {avg_train_loss:.4f} "
             f"val_loss {avg_loss:.4f}  ppl {ppl:.0f}  "
             f"bpc {bpc:.3f}  Δnats {delta_nats:.3f}  x-better {improv_ratio:.2f}x  (lnV {lnV:.3f})"
         )
@@ -296,6 +299,14 @@ def main():
                     "scaler": scaler.state_dict() if (use_amp and amp_dtype == torch.float16) else None,
                     "epoch": epoch,
                     "val_loss": avg_loss,
+                    "vocab_size": vocab_size,
+                    "hyperparams": {
+                        "n_embd": n_embd,
+                        "n_head": n_head,
+                        "n_layer": n_layer,
+                        "block_size": block_size,
+                        "dropout": dropout
+                    },
                 },
                 os.path.join(args.checkpoint_dir, f"epoch_{epoch+1:.03d}.pt"),
             )
@@ -314,5 +325,4 @@ def main():
     print("Training finished")
 
 if __name__ == "__main__":
-    # print("Test")
     main()
