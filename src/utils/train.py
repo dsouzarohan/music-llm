@@ -190,6 +190,19 @@ def main():
     epochs = args.epochs
     V = vocab_size
     lnV = np.log(V)
+    num_micro_batches = len(train_dl)
+    total_steps = (num_micro_batches * epochs) // grad_accum_steps
+
+    print(f"Total optimization step: {total_steps}")
+    scheduler = torch.optim.lr_scheduler.OneCycleLR(
+        optimizer,
+        max_lr=learning_rate,
+        total_steps=total_steps,
+        pct_start=0.05, # Warmup for first 5% of training,
+        anneal_strategy='cos', # cosine decay
+        div_factor=25.0, # initial LR will be max_lr / 25
+        final_div_factor=1000.0, # Final LR will be tiny
+    )
 
     best_val_loss = float("inf")
 
@@ -231,6 +244,9 @@ def main():
                     torch.nn.utils.clip_grad_norm(model.parameters(), 1.0)
                     optimizer.step()
 
+                # step the scheduler
+                scheduler.step()
+
                 # Resets gradients ONLY after the step, or else we will lose our gradients
                 optimizer.zero_grad(set_to_none=True)
 
@@ -256,13 +272,15 @@ def main():
 
         num_train_steps = len(train_dl)
         avg_train_loss = train_loss_accum / num_train_steps
+        current_lr = scheduler.get_last_lr()[0]
 
         # TODO: understand these metrics in depth
         print(
-            f"epoch {epoch:03d} "
+            f"epoch {epoch} "
             f"train {avg_train_loss:.4f} "
             f"val_loss {avg_loss:.4f}  ppl {ppl:.0f}  "
             f"bpc {bpc:.3f}  Δnats {delta_nats:.3f}  x-better {improv_ratio:.2f}x  (lnV {lnV:.3f})"
+            f"LR {current_lr:.6f}"
         )
 
         # ---------------
@@ -308,7 +326,7 @@ def main():
                         "dropout": dropout
                     },
                 },
-                os.path.join(args.checkpoint_dir, f"epoch_{epoch+1:.03d}.pt"),
+                os.path.join(args.checkpoint_dir, f"epoch_{epoch+1}.pt"),
             )
             print(f"Saved checkpoint at epoch {epoch+1}")
 

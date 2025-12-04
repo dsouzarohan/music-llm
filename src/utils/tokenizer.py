@@ -4,17 +4,24 @@ import shutil
 from miditok import REMI, TokenizerConfig
 from miditok.data_augmentation import augment_dataset
 from pathlib import Path
+import argparse
 
 from src.utils.hyperparameters import VOCAB_SIZE
 
 # https://miditok.readthedocs.io/en/latest/train.html#tokenizer-models
+
+# TODO: refactor this to function format, adding as a script flow for now
+parser = argparse.ArgumentParser()
+parser.add_argument("--data_root", type=str, default="../../data/")
+parser.add_argument("--vocab_size", type=int, default=VOCAB_SIZE, help="Vocabulary size")
+args = parser.parse_args()
 
 # TODO: Our TokenizerConfig also contain configurations that can be seen as hyperparameters, for now keeping it to the bare minimum
 config = TokenizerConfig(num_velocities=16, use_chords=True, use_programs=True, use_rests=True)
 tokenizer = REMI(config)
 
 # Define paths
-data_root = Path("../../data/")
+data_root = Path(args.data_root)
 midi_folder = data_root / "midi/"
 augmented_folder = data_root / "augmented/"
 tokenized_folder = data_root / "tokenized/"
@@ -36,6 +43,9 @@ for folder in [splits_folder, train_midi_folder, val_midi_folder, augmented_fold
     if folder.exists():
         shutil.rmtree(folder)  # rm the folder directory
     folder.mkdir(parents=True, exist_ok=True)  # recreate the folder
+
+# vocab size
+vocab_size = args.vocab_size
 
 # all MIDIs
 all_orig_midis = list(midi_folder.glob("*.mid"))
@@ -89,7 +99,7 @@ val_midi_paths = list(val_midi_folder.glob("*.mid"))
 # This will help us reduce the overall sequence length of examples
 # That would help us with context window size
 tokenizer.train(
-    vocab_size=VOCAB_SIZE,  # TODO: Hyperparameter
+    vocab_size=vocab_size,
     model="BPE",
     files_paths=train_midi_paths
 )
