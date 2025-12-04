@@ -190,15 +190,20 @@ def main():
     epochs = args.epochs
     V = vocab_size
     lnV = np.log(V)
+
     num_micro_batches = len(train_dl)
-    total_steps = (num_micro_batches * epochs) // grad_accum_steps
+    steps_per_epoch = num_micro_batches // grad_accum_steps
+    if num_micro_batches % grad_accum_steps != 0:
+        steps_per_epoch += 1
+        
+    total_steps = steps_per_epoch * epochs
 
     print(f"Total optimization step: {total_steps}")
     scheduler = torch.optim.lr_scheduler.OneCycleLR(
         optimizer,
         max_lr=learning_rate,
         total_steps=total_steps,
-        pct_start=0.05, # Warmup for first 5% of training,
+        pct_start=0.1, # Warmup for first 5% of training,
         anneal_strategy='cos', # cosine decay
         div_factor=25.0, # initial LR will be max_lr / 25
         final_div_factor=1000.0, # Final LR will be tiny
