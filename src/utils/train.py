@@ -59,6 +59,11 @@ def parse_args():
     parser.add_argument("--vocab_size", type=int, default=VOCAB_SIZE, help="Vocabulary size")
     parser.add_argument("--learning_rate", type=float, default=LEARNING_RATE, help="Learning rate")
 
+    # Training run arguments
+    parser.add_argument("--resume", type=str, default=None, help="Path to checkpoint to resume training (loads optimizer)")
+    parser.add_argument("--finetune_from", type=str, default=None)
+
+
     return parser.parse_args()
 
 def main():
@@ -183,45 +188,74 @@ def main():
     print("Training on device:", device)
     print("Using amp?", use_amp, amp_dtype)
 
+    # -------
+    # Resume
+    # -------
+    start_epoch = 0
+    best_val_loss = float("inf")
+
+    if args.resume:
+        if os.path.isfile(args.resume):
+            print(f"Resuming training from checkpoint: {args.resume}")
+            checkpoint = torch.load(args.resume, map_location=device)
+
+            # Load sates
+            model.load_state_dict(checkpoint['model'])
+            optimizer.load_state_dict(checkpoint['optimizer'])
+
+            # Restore training state
+            start_epoch = checkpoint['epoch'] + 1
+            best_val_loss = checkpoint.get('best_val_loss', float("inf"))
+
+            # Handle scaler state if it does exist
+            if 'scaler' in checkpoint and checkpoint['scaler'] is not None:
+                scaler.load_state_dict(checkpoint['scaler'])
+            print(f"Resumed from Epoch {checkpoint['epoch']} with val loss {best_val_loss:.3f}")
+        else:
+            print(f"Checkpoint not found at {args.resume}, starting from scratch.")
+    elif args.finetune_from:
+        # TODO: add fine tuning logic
+        pass
+
     # --------------------------------
     # training loop and checkpointing
     # --------------------------------
-
-    epochs = args.epochs
     V = vocab_size
     lnV = np.log(V)
 
-    num_micro_batches = len(train_dl)
-    steps_per_epoch = num_micro_batches // grad_accum_steps
-    if num_micro_batches % grad_accum_steps != 0:
-        steps_per_epoch += 1
-        
-    total_steps = steps_per_epoch * epochs
+    # recalculate steps based on remaining epochs (if it is a resume run)
+    remaining_epochs = args.epochs - start_epoch # start_epoch will be 0 if not a resume
+    num_micro_batches = len(train_dl) # number of batches per epoch
+    grad_accum_steps = max(1, batch_size // micro_batch_size) # handles cases if our batch size is not perfectly divisible with our batch size
 
-    print(f"Total optimization step: {total_steps}")
+    steps_per_epoch = num_micro_batches // grad_accum_steps
+    if num_micro_batches % grad_accum_steps != 0: # adds another step to the epoch to cover for the last batch diff
+        steps_per_epoch += 1
+
+    total_steps = steps_per_epoch * remaining_epochs
+
+    print(f"Training for {remaining_epochs} epochs ({total_steps} steps).")
     scheduler = torch.optim.lr_scheduler.OneCycleLR(
         optimizer,
         max_lr=learning_rate,
         total_steps=total_steps,
-        pct_start=0.1, # Warmup for first 5% of training,
+        pct_start=0.1, # Warmup for first 10% of training,
         anneal_strategy='cos', # cosine decay
         div_factor=25.0, # initial LR will be max_lr / 25
         final_div_factor=1000.0, # Final LR will be tiny
     )
 
-    best_val_loss = float("inf")
-
-    for epoch in range(epochs):
+    for epoch in range(start_epoch, args.epochs):
         model.train()
         optimizer.zero_grad(set_to_none=True)
-
         train_loss_accum = 0.0
+
         for step, (x, y) in enumerate(train_dl):
             x , y = x.to(device), y.to(device)
 
             # Using torch.autocast here with device_Type to avoid backend specific contexts
             # Forward pass with autocast
-            with torch.amp.autocast('cuda', dtype=amp_dtype, enabled=torch.cuda.is_available()):
+            with torch.amp.autocast('cuda', dtype=amp_dtype, enabled=use_amp):
                 logits, loss = model(x, y)
                 loss = loss / grad_accum_steps # scale loss by accumulation steps so gradients average out correctly
 
@@ -242,11 +276,11 @@ def main():
             if (step + 1) % grad_accum_steps == 0 or is_last_step:
                 if use_amp and amp_dtype == torch.float16:
                     scaler.unscale_(optimizer)
-                    torch.nn.utils.clip_grad_norm(model.parameters(), 1.0)
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), 0.5)
                     scaler.step(optimizer)
                     scaler.update()
                 else:
-                    torch.nn.utils.clip_grad_norm(model.parameters(), 1.0)
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), 0.5)
                     optimizer.step()
 
                 # step the scheduler
@@ -341,7 +375,7 @@ def main():
             "model": model.state_dict(),
             "optimizer": optimizer.state_dict(),
             "scaler": scaler.state_dict() if (use_amp and amp_dtype == torch.float16) else None,
-            "epoch": epochs - 1
+            "epoch": args.epochs - 1
         },
         os.path.join(args.checkpoint_dir, "final.pt"),
     )
