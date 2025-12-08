@@ -20,3 +20,22 @@ cut -d',' -f4 midi_extraction_log.csv | sort | uniq -c # shows by each status
 
 # Songs # all songs with guitar tracks (success only)
 grep "success" midi_extraction_log.csv | cut -d',' -f3 | sort
+
+# terminal run scripts
+
+# runs tokenizer
+ ~/dev/miniconda3/bin/conda run -n music-llm --no-capture-output python /home/piffs/Documents/dev/music-llm/src/utils/tokenizer.py --vocab_size 3500
+
+# runs training
+!python -m src.utils.train \
+  --data_root data \
+  --vocab_size 3500 \
+  --batch_size 64 \
+  --micro_batch_size 4 \
+  --block_size 2048 \
+  --n_layer 12 \
+  --n_head 12 \
+  --dropout 0.1 \
+  --embedding_dim 768 \
+  --epochs 50 \
+  --save_every 5
