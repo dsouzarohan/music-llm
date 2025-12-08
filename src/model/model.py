@@ -100,10 +100,12 @@ class RelativeHead(nn.Module):
 
         # standard attention, but with a bias
         scores = q @ k.transpose(-2, -1) # (B, T, Dh) @ (B, Dh, T) = (B,T,T)
-        scores = scores * (self.head_size ** -0.5)
 
         # add relative bias to the scores
         scores = scores + s_rel # (B, T, T) + (B, T, T) -> (B, T, T)
+
+        # scales after bias is applied to ensure both get scaled now
+        scores = scores * (self.head_size ** -0.5)
 
         # causal mask
         scores = scores.masked_fill(self.tril[:T, :T] == 0, float("-inf"))
