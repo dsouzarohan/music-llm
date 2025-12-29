@@ -144,7 +144,7 @@ class FeedForward(nn.Module):
         self.mlp_ratio = 3 # known as the MLP ratio, how much we expand the dimensions in the MLP before bring it back down
         self.mlp = nn.Sequential(
             nn.Linear(n_embd, n_embd * self.mlp_ratio),
-            nn.ReLU(),
+            nn.GELU(),
             nn.Linear(n_embd * self.mlp_ratio, n_embd),
             nn.Dropout(dropout)
         )
@@ -188,6 +188,30 @@ class MusicTransformer(nn.Module):
             *[Block(self.n_embd, self.n_head, self.dropout, self.block_size) for _ in range(self.n_layer)])
         self.ln_f = nn.LayerNorm(self.n_embd)
         self.last = nn.Linear(self.n_embd, self.vocab_size)
+
+        # Apply Base Init to everything
+        self.apply(self._init_weights)
+
+        # Apply Special Scaled Init to Residual Projections
+        print("Applying GPT-2 Scaled Init to:")
+        for name, param in self.named_parameters():
+            # Catch Attention Projection (usually named 'proj.weight')
+            # Catch FeedForward Output (usually named 'mlp.2.weight' in your Sequential)
+            if name.endswith("proj.weight") or "mlp.2.weight" in name:
+                
+                # Calculate the scale: 1 / sqrt(2 * layers)
+                std_scaled = 0.02 / math.sqrt(2 * self.n_layer)
+                
+                torch.nn.init.normal_(param, mean=0.0, std=std_scaled)
+                print(f" - {name} (std={std_scaled:.6f})")
+
+    def _init_weights(self, module):
+        if isinstance(module, nn.Linear):
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+            if module.bias is not None:
+                torch.nn.init.zeros_(module.bias)
+        elif isinstance(module, nn.Embedding):
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
     def forward(self, idx, targets=None):
 
