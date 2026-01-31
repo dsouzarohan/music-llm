@@ -80,8 +80,8 @@ class RelativeHead(nn.Module):
         B, T, C = x.shape
         # (B, T, C) @ (C, Dh) = (B, T, Dh)
         q = self.query(x) # (B, T, Dh)
-        k = self.query(x) # (B, T, Dh)
-        v = self.query(x) # (B, T, Dh)
+        k = self.key(x)   # (B, T, Dh)
+        v = self.value(x) # (B, T, Dh)
 
         # Compute relative content scores (Q @ E)
         # In this matrix, columns represent "Relative Distances", not absolute keys:
