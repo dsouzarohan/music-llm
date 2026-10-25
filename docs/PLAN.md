@@ -25,7 +25,7 @@ re-measures the baseline.
 
 ## T1 · Verification harness and CI
 
-**Status:** todo
+**Status:** done (PR #2)
 
 Set up the script-driven harness that every later task relies on.
 
@@ -46,7 +46,8 @@ Set up the script-driven harness that every later task relies on.
   `strict=True` makes each one fail loudly once its bug is fixed, so the marker has to be
   removed.
 - Scripts:
-  - `scripts/verify.sh`: pytest, then a smoke train
+  - `scripts/verify.sh`: pytest. The smoke train runs inside pytest
+    (`tests/test_smoke_train.py`), so its checkpoint can also back the #3 test.
   - `scripts/smoke-train.sh`: a 1-epoch tiny run on synthetic data, or on `--data_root` if
     given
   - `scripts/setup.sh`: `uv sync`
@@ -57,10 +58,11 @@ Set up the script-driven harness that every later task relies on.
 
 **Acceptance:**
 
-- [ ] `scripts/verify.sh` exits 0 on a fresh clone after `scripts/setup.sh`, in under ~2 min
-      locally.
-- [ ] CI runs the same script and is green.
-- [ ] The xfail tests for #1–#3 fail as expected today.
+- [x] `scripts/verify.sh` exits 0 on a fresh clone after `scripts/setup.sh`, in under ~2 min
+      locally. (~8 s on MPS.)
+- [x] CI runs the same script and is green. (~80 s, of which `uv sync` is 27 s with the
+      default CUDA torch wheel, so no CPU-only index was needed.)
+- [x] The xfail tests for #1–#3 fail as expected today.
 
 ## T2 · Model correctness and sampling
 
