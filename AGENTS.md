@@ -35,9 +35,9 @@ diffs readable.
   agent-specific hidden folders (`.claude/`, `.codex/`, `.cursor/`). That includes docs,
   scripts and, later, skills, which will go in a top-level `skills/` folder.
 - **Script-driven.** Routine actions are scripts under `scripts/`: setup, verification, smoke
-  training, data reports. Agents run the scripts instead of retyping commands. Building
-  `scripts/verify.sh` is task T1 in `docs/PLAN.md`. Once it exists, it is the gate: run it
-  before calling any code change done.
+  training, data reports. Agents run the scripts instead of retyping commands.
+  `scripts/verify.sh` is the gate: run it before calling any code change done. CI runs the
+  same script on every PR.
 - **Docs follow code.** If a change makes a doc wrong (architecture, data pipeline, commands
   in this file), update the doc in the same change.
 
@@ -65,6 +65,11 @@ src/utils/tokenizer.py                    split -> augment -> train BPE -> token
 src/utils/data/random_guitar_seq_dataset.py   default dataset: random windows
 src/utils/data/guitar_dataset.py          sliding-window dataset (--use_guitar_ds)
 playground/*.ipynb                        exploration + inference (model_run.ipynb)
+tests/                                    pytest suite; tests/synthetic.py writes a fake token corpus
+scripts/setup.sh                          uv sync --locked
+scripts/verify.sh                         the gate: pytest, including an end-to-end smoke train
+scripts/smoke-train.sh                    tiny 1-epoch train.py run on synthetic data
+.github/workflows/verify.yml              CI: setup.sh + verify.sh on ubuntu
 scripts/stats.sh                          grep/awk snippets for the extraction log (legacy, to be replaced; leave as is)
 docs/                                     plan, roadmap, architecture, journal; see docs/README.md
 data/                                     gitignored, see "Data" below
@@ -80,9 +85,8 @@ is the only invocation that resolves cleanly.
 uv run python -m src.utils.train --data_root data --checkpoint_dir data/checkpoints \
   --vocab_size 3000 --block_size 512 --n_layer 8 --n_head 4 --embedding_dim 384 --epochs 20
 
-# Quick local smoke test (tiny model; finishes in seconds on MPS)
-uv run python -m src.utils.train --data_root data --checkpoint_dir /tmp/ckpt \
-  --block_size 64 --n_layer 2 --n_head 2 --embedding_dim 64 --batch_size 8 --micro_batch_size 8 --epochs 1
+# Tiny smoke run on the local snapshot instead of synthetic tokens
+scripts/smoke-train.sh --data_root data --vocab_size 3000
 ```
 
 `tokenizer.py` and `midi_extractor.py` are **destructive**:
@@ -93,9 +97,23 @@ uv run python -m src.utils.train --data_root data --checkpoint_dir /tmp/ckpt \
 
 Don't run either one unless the task is explicitly to regenerate data.
 
-Until T1 lands there is no test suite. For model changes, verify with a forward pass plus a
-backward pass on a tiny config on MPS or CPU. Also compare the parameter count against the
-formula in `docs/architecture/model-and-training.md`.
+## Verification
+
+```bash
+scripts/setup.sh                 # once, or after pulling dependency changes
+scripts/verify.sh                # full gate, ~10 s locally
+scripts/verify.sh -k causal      # extra args go to pytest
+scripts/smoke-train.sh           # just the tiny training run, output to the terminal
+```
+
+- Tests run on CPU with a tiny model and synthetic tokens from `tests/synthetic.py`. They
+  never read `data/`, so they behave the same on a fresh clone and in CI.
+- Known bugs have `xfail(strict=True)` tests that name their issue number. When a fix makes
+  one pass, pytest reports it as a failure (XPASS): remove the marker in the same change, and
+  mark the issue fixed in `docs/known-issues.md`.
+- A new behaviour or bug fix comes with a test. The parameter-count test pins the formula in
+  `docs/architecture/model-and-training.md`, so a change to the model's parameters updates
+  both.
 
 ## Where things run
 
