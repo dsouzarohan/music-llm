@@ -100,7 +100,7 @@ Notes:
 
 ## T3 · Training loop and checkpoints
 
-**Status:** todo
+**Status:** done (PR #4)
 
 Make runs resumable and correct.
 
@@ -112,24 +112,27 @@ Make runs resumable and correct.
   `final.pt`.
 - #6: scale the last partial accumulation group by its real size.
 - #7: fix the dataset window off-by-ones.
-- #13, #20: remove the duplicate `grad_accum` calculation and the unused folder paths.
+- #20 and cleanup: remove the unused folder paths and the duplicate `grad_accum` calculation.
+  (An earlier draft listed #13 here by mistake; #13 is the extractor's log indentation and
+  stays with the data work in Phase 3.)
 - #18: make paths work from the repo root. `--data_root` defaults to `data`, and
   `--checkpoint_dir` defaults to `{data_root}/checkpoints`.
 - #24: device-generic autocast and GradScaler, and accurate log lines.
 
 **Acceptance:**
 
-- [ ] Test: train 2 steps, save, resume. The optimizer step count, scheduler LR and epoch
-      continue from where they stopped.
-- [ ] Test: a checkpoint from a compiled model loads into an uncompiled model.
-- [ ] The #3 xfail is removed.
-- [ ] The commands in `AGENTS.md` work without the `--checkpoint_dir` workaround. Update the
-      docs.
-- [ ] `scripts/verify.sh` is green.
+- [x] Test: train 2 steps, save, resume. The optimizer step count, scheduler LR and epoch
+      continue from where they stopped. (`test_resume_continues_exactly`: checkpoints also
+      carry RNG state, so the resumed run's final weights equal an uninterrupted run's.)
+- [x] Test: a checkpoint from a compiled model loads into an uncompiled model.
+- [x] The #3 xfail is removed.
+- [x] The commands in `AGENTS.md` work without the `--checkpoint_dir` workaround. Update the
+      docs. (`--checkpoint_dir` is replaced by run directories, T4.)
+- [x] `scripts/verify.sh` is green.
 
 ## T4 · Run configs, metrics and a fixed val set
 
-**Status:** todo
+**Status:** done (PR #4)
 
 Make each run reproducible and comparable.
 
@@ -147,20 +150,23 @@ Make each run reproducible and comparable.
 
 **Acceptance:**
 
-- [ ] `scripts/train.sh configs/smoke.toml` writes a run directory with `config.json` and
+- [x] `scripts/train.sh configs/smoke.toml` writes a run directory with `config.json` and
       `metrics.jsonl`.
-- [ ] Two runs with the same config and seed give the same val loss on the fixed val set
+- [x] Two runs with the same config and seed give the same val loss on the fixed val set
       (CPU).
-- [ ] `docs/architecture/model-and-training.md` is updated.
-- [ ] `scripts/verify.sh` is green.
+- [x] `docs/architecture/model-and-training.md` is updated.
+- [x] `scripts/verify.sh` is green.
+
+Also added: `--profile_steps` (writes `profile.txt` with the attention/MLP split), `--device`,
+`--[no-]compile`, `--grad_clip`, `--finetune_from` (weights only).
 
 ## T5 · Scripted Colab run and baseline
 
-**Status:** todo
+**Status:** in progress: `scripts/colab.sh` written; the A100 run is next
 
 Test `docs/colab.md` end to end, and measure where compute goes.
 
-- Script the Colab workflow under `scripts/colab/`: provision, sync code, launch detached,
+- Script the Colab workflow in `scripts/colab.sh`: provision, sync code, launch detached,
   poll, fetch artifacts, stop. Correct `docs/colab.md` wherever reality differs.
   `colab drivemount` stays a manual step for the owner.
 - Run `configs/colab-186m-jan2026.toml` on an A100 for a few epochs. Record tokens/s, MFU, and

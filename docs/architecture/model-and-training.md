@@ -84,20 +84,25 @@ The `rel_bias` tables grow with `block_size × C × L`. They are the reason a 20
 
 | Aspect | What it does |
 |---|---|
-| Entry | `python -m src.utils.train` from repo root |
+| Entry | `scripts/train.sh <config.toml> [flags]`, i.e. `python -m src.utils.train --config …` from the repo root. `train(args)` is also callable in-process (tests do this). |
+| Config | A flat TOML run spec in `configs/` whose keys are the CLI options. Precedence: CLI flag > TOML > `hyperparameters.py` defaults. Unknown TOML keys are an error. |
+| Run directory | `{data_root}/runs/<timestamp>-<name>/` (or `--run_dir`; a resume writes into the checkpoint's directory). Holds `config.json` (resolved args plus device, param count, FLOPs/token, git commit), `metrics.jsonl` and the checkpoints. |
 | Data | `{data_root}/tokenized/train-aug/*.json` and `{data_root}/tokenized/val/*.json` |
-| Dataset | `RandomGuitarSeqDataset` by default. `__len__` = `epoch_len` (train 2000, val 400). Each item is a random file (weighted by length) at a random offset. `--use_guitar_ds` switches to sliding windows. |
-| Batching | `--batch_size` is the effective batch and `--micro_batch_size` is what fits in VRAM. `grad_accum = batch // micro` |
+| Train set | `RandomGuitarSeqDataset`: `--train_windows` (default 2000) random windows per epoch, each from a random file weighted by its number of valid starts. `--use_guitar_ds` switches to sliding windows. |
+| Val set | **Fixed**: `GuitarDataset` with stride `block_size` (non-overlapping windows over every val file), thinned to `--val_windows` (default 512) evenly spaced windows. The same files always give the same windows, so val loss is comparable across epochs and runs. |
+| Batching | `--batch_size` is the effective batch and `--micro_batch_size` is what fits in memory. `grad_accum = batch // micro`. Each micro-batch loss is divided by the size of its accumulation group, so a short last group isn't under-weighted. |
 | Optimizer | AdamW(lr, betas=(0.9, 0.95)), default weight decay 0.01, applied to all params |
-| Schedule | `OneCycleLR`, stepped per optimizer step: 10% warmup from lr/25, then cosine down to lr/25000 |
-| Clipping | `clip_grad_norm_(…, 0.5)` |
+| Schedule | `OneCycleLR` over all `epochs`, stepped per optimizer step: 10% warmup from lr/25, then cosine down to lr/25000 |
+| Clipping | `clip_grad_norm_(…, --grad_clip)`, default 0.5 |
 | Precision | CUDA only: bf16 autocast if supported, else fp16 + GradScaler. TF32 on. MPS/CPU run fp32. |
-| Compile | `torch.compile(model)` whenever available |
-| Device | cuda → mps → cpu |
-| Eval | full pass over 400 random val windows each epoch. Prints `val_loss`, `ppl`, `bpc`, `Δnats = ln V − loss`, and `x-better = V / ppl` (improvement over uniform guessing) |
-| Logging | `print` only (no wandb or tensorboard) |
-| Checkpoints | `best.pt` (on val improvement), `epoch_N.pt` (`--save_every`), `final.pt`. The dict holds `model`, `optimizer`, `scaler`, `epoch`, `best_val_loss`, `vocab_size`, and `hyperparams{n_embd,n_head,n_layer,block_size,dropout}`. `final.pt` lacks the last two. |
-| Resume | `--resume path.pt` restores model, optimizer, scaler and epoch. The scheduler is **rebuilt** over the remaining epochs, so warmup restarts. |
+| Compile | `torch.compile(model)` unless `--no-compile` |
+| Device | `--device auto`: cuda → mps → cpu |
+| Metrics | One `metrics.jsonl` row per epoch: `train_loss`, `val_loss`, `val_ppl`, `val_bits_per_token`, `lr`, mean `grad_norm` (before clipping), `tokens_per_sec`, `mfu`, `train_time_s`. |
+| MFU | `tokens/s × FLOPs/token ÷ peak FLOP/s`. FLOPs/token = `6N + 18·L·C·T`: 6N for the weights (2 forward + 4 backward per parameter) plus three T×C attention matmuls per layer (`q@kᵀ`, `q@Eᵀ`, `attn@v`). Peak is looked up for H100/A100/L4/T4 (dense bf16) or set with `--peak_flops`; otherwise `mfu` is null. |
+| Profiling | `--profile_steps N` profiles N micro-steps of the first epoch into `{run_dir}/profile.txt`: forward time in the `attention` and `mlp` regions (`Block.forward` labels) as a share of step time, then the op table. The labels disappear under `torch.compile`, so profile the split with `--no-compile`. |
+| Checkpoints | `best.pt` (on val improvement), `epoch_N.pt` (`--save_every`), `final.pt`, all written by `save_checkpoint` with one schema: `model` (uncompiled keys), `optimizer`, `scheduler`, `scaler`, `epoch`, `step`, `val_loss`, `best_val_loss`, `vocab_size`, `hyperparams`, `config`, `rng`. `load_checkpoint` strips the `_orig_mod.` prefix from older checkpoints. |
+| Resume | `--resume path.pt` restores model, optimizer, scheduler, scaler, step, epoch and RNG state, so the run continues exactly: same LR schedule, same data order, same dropout masks. Pre-T3 checkpoints have no scheduler state; the schedule then restarts over the remaining epochs. |
+| Fine-tune | `--finetune_from path.pt` loads model weights only, with a fresh optimizer and schedule. |
 
 One epoch here means `epoch_len / micro_batch` micro-steps, **not** one pass over the corpus.
 For the current Colab config: 2000 windows / 8 = 250 micro-steps, which at 16× accumulation
@@ -117,8 +122,8 @@ prompt length works.
 - It switches to eval mode and `no_grad` itself, and restores the previous mode afterwards.
 - There is no EOS stop and no KV cache: every step reruns the whole window.
 
-`playground/model_run.ipynb` loads `data/checkpoints/best.pt` (or `$MUSIC_LLM_CKPT`), strips
-the `_orig_mod.` key prefix that compiled runs save (known issue #3), and rebuilds the model
+`playground/model_run.ipynb` loads `data/checkpoints/best.pt` (or `$MUSIC_LLM_CKPT`) with
+`load_checkpoint`, which strips the `_orig_mod.` prefix pre-T3 compiled runs saved, and rebuilds the model
 from `ckpt["hyperparams"]`. It prompts with the first 64 tokens of a val song, generates 1024
 tokens with `temperature=0.9, top_k=40, top_p=0.95`, and decodes both the prompt and the
 output to `data/output/*.mid` with `REMI(params=data/tokenized/config/tokenizer.json)`. It

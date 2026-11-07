@@ -24,6 +24,9 @@ diffs readable.
   - Tick the acceptance criteria as they're met.
   - Set the task's status when it's done.
   - When the story is done, the next roadmap phase becomes the new `PLAN.md`.
+  - **One PLAN ships as one PR.** Commit task by task on one branch, keep the PR open until
+    the whole story is done (including any cloud run whose results the plan records), then
+    squash-merge. The PR title is the squash commit, so write it as a Conventional Commit.
 - **`docs/known-issues.md`** lists bugs with file:line. Tasks reference issues by number.
   When you fix one, mark it fixed there.
 - **`docs/journal/`** is the dated project log, one file per entry. Add an entry when a session
@@ -58,8 +61,12 @@ uv run jupyter lab           # playground notebooks (dev group, installed by def
 
 ```
 src/model/model.py                        MusicTransformer, RelativeHead (+ unused Head)
-src/utils/train.py                        training entry point (CLI)
+src/utils/train.py                        training entry point: parse_args() + train(args)
+src/utils/checkpoint.py                   save_checkpoint / load_checkpoint (one schema)
+src/utils/config.py                       TOML run spec -> argparse defaults
+src/utils/metrics.py                      FLOPs/token, GPU peak FLOPs, MFU
 src/utils/hyperparameters.py              default hparams (CLI defaults for train.py)
+configs/*.toml                            run specs (smoke, colab-186m-jan2026)
 src/utils/midi_extractor.py               Lakh MIDI -> per-guitar-track .mid (music21)
 src/utils/tokenizer.py                    split -> augment -> train BPE -> tokenize to JSON
 src/utils/data/random_guitar_seq_dataset.py   default dataset: random windows
@@ -68,7 +75,9 @@ playground/*.ipynb                        exploration + inference (model_run.ipy
 tests/                                    pytest suite; tests/synthetic.py writes a fake token corpus
 scripts/setup.sh                          uv sync --locked
 scripts/verify.sh                         the gate: pytest, including an end-to-end smoke train
-scripts/smoke-train.sh                    tiny 1-epoch train.py run on synthetic data
+scripts/train.sh                          train from a config: scripts/train.sh <config.toml> [flags]
+scripts/smoke-train.sh                    configs/smoke.toml on a synthetic corpus
+scripts/colab.sh                          Colab session: new/setup/train/logs/status/fetch/stop
 .github/workflows/verify.yml              CI: setup.sh + verify.sh on ubuntu
 scripts/stats.sh                          grep/awk snippets for the extraction log (legacy, to be replaced; leave as is)
 docs/                                     plan, roadmap, architecture, journal; see docs/README.md
@@ -81,9 +90,12 @@ Run everything **from the repo root**. Modules import `src.*`, so `python -m` fr
 is the only invocation that resolves cleanly.
 
 ```bash
-# Train (always pass --data_root and --checkpoint_dir; the defaults assume cwd=src/utils)
-uv run python -m src.utils.train --data_root data --checkpoint_dir data/checkpoints \
-  --vocab_size 3000 --block_size 512 --n_layer 8 --n_head 4 --embedding_dim 384 --epochs 20
+# Train from a run spec; flags override it. Output goes to data/runs/<timestamp>-<name>/
+scripts/train.sh configs/smoke.toml --data_root data --vocab_size 3000
+scripts/train.sh configs/smoke.toml --resume data/runs/<run>/epoch_5.pt   # exact resume
+
+# Real runs happen on Colab: see docs/colab.md
+scripts/colab.sh train configs/colab-186m-jan2026.toml
 
 # Tiny smoke run on the local snapshot instead of synthetic tokens
 scripts/smoke-train.sh --data_root data --vocab_size 3000
@@ -149,7 +161,8 @@ as representative, and don't "fix" it to match Drive.
 - Conventional Commits. No `Co-Authored-By: Claude` trailer and no "Generated with Claude Code"
   line.
 - When a change affects training dynamics, put before/after `val_loss` and `ppl` in the
-  commit message, with the config used.
+  commit message, with the config used. Compare val losses only on the fixed val set
+  (post-T4 runs); earlier numbers used random val windows.
 - **Changes that invalidate checkpoints:** some architecture changes make old checkpoints
   unusable, for example init, activation, norm placement, or new parameters. Call that out
   explicitly. The owner resumes runs from `best.pt`, so they need to know.
