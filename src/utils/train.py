@@ -261,7 +261,7 @@ def train(args):
     start_epoch, step, best_val_loss = 0, 0, float("inf")
 
     if args.resume:
-        ckpt = load_checkpoint(args.resume, map_location=device)
+        ckpt = load_checkpoint(args.resume, map_location="cpu") # load_state_dict copies onto the model/optimizer device
         model.load_state_dict(ckpt["model"])
         start_epoch = ckpt["epoch"] + 1
         step = ckpt.get("step", 0)
@@ -278,10 +278,11 @@ def train(args):
             scaler.load_state_dict(ckpt["scaler"])
         if ckpt.get("rng") is not None:
             set_rng_state(ckpt["rng"])
+        del ckpt
         print(f"Resumed {args.resume} at epoch {start_epoch}, step {step}, best val {best_val_loss:.4f}")
     else:
         if args.finetune_from:
-            model.load_state_dict(load_checkpoint(args.finetune_from, map_location=device)["model"])
+            model.load_state_dict(load_checkpoint(args.finetune_from, map_location="cpu")["model"])
             print(f"Fine-tuning from {args.finetune_from}")
         scheduler = make_scheduler(steps_per_epoch * args.epochs)
 

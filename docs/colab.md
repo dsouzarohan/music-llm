@@ -55,6 +55,15 @@ What each step does:
   printing.
 - **`ls | wc -l` undercounts the token files**: some filenames contain newlines. Count with
   Python or `find -print0`.
+- **Colab may terminate a session whose notebook looks idle**, even while a detached process
+  trains on the GPU. The first baseline attempt died after ~80 min with no browser attached.
+  Keep the session open in a browser tab (`colab url -s music --open`) during long runs.
+- **Drive uploads asynchronously.** When that VM died, `metrics.jsonl` (small appends) had
+  synced through epoch 14, but the ~2 GB `best.pt` writes from epochs 10–14 never finished
+  uploading, so Drive's `best.pt` was from epoch 9. A file existing on Drive doesn't mean its
+  latest write did. Resume from the newest checkpoint whose `epoch` matches what you expect.
+- **`colab exec` connections drop occasionally** (`RuntimeError: Connection was lost`). Every
+  `setup` step is idempotent, so re-run it. `colab console` was steadier for one-off commands.
 - **`colab new` can stop for a browser auth code** when its saved login lapses or it asks for
   new scopes (it requested `drive.file`). Run it from your own terminal.
 
