@@ -66,7 +66,7 @@ Set up the script-driven harness that every later task relies on.
 
 ## T2 · Model correctness and sampling
 
-**Status:** todo
+**Status:** done (PR #3)
 
 Make the model usable for generation.
 
@@ -83,12 +83,20 @@ Make the model usable for generation.
 - #25: update `playground/model_run.ipynb` so it loads a checkpoint and generates from a short
   prompt, with the stale `rel_bias` plot removed.
 
+Notes:
+
+- The notebook was checked against a 1-epoch smoke checkpoint on the local snapshot. It runs
+  end to end, but that model's output has a 67% grammar error rate, so its MIDI has no new
+  notes. Generating real music needs a trained checkpoint (T5).
+- `top_p` was added alongside `top_k`. Neither changes parameters, so existing checkpoints
+  still load.
+
 **Acceptance:**
 
-- [ ] The #1 and #2 xfails are removed and those tests pass.
-- [ ] `generate()` from a 16-token prompt produces `max_new_tokens` tokens with
-      `top_k=40, temperature=0.9`.
-- [ ] `scripts/verify.sh` is green.
+- [x] The #1 and #2 xfails are removed and those tests pass.
+- [x] `generate()` from a 16-token prompt produces `max_new_tokens` tokens with
+      `top_k=40, temperature=0.9`. (`test_generate_from_short_prompt`)
+- [x] `scripts/verify.sh` is green.
 
 ## T3 · Training loop and checkpoints
 

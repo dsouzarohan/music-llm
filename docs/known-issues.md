@@ -4,16 +4,16 @@ Tasks in `docs/PLAN.md` refer to issues by number. When an issue is fixed, add
 `**Fixed** (<commit>)` to its line, and leave the number in place so references stay valid.
 
 Found by a code read on 2026-10-17. #1 and the parameter count were verified by running the
-code under uv (torch 2.14.1, MPS). Nothing here is fixed yet. Numbers are a rough priority
+code under uv (torch 2.14.1, MPS). Numbers are a rough priority
 order.
 
 ## Correctness
 
-1. **`RelativeHead` crashes when `T < block_size`** (`model.py:88-96`). `rel_bias.weight` is
+1. **Fixed** (PR #3). **`RelativeHead` crashes when `T < block_size`** (`model.py:88-96`). `rel_bias.weight` is
    always `(block_size, Dh)`, so `.view(B, T+1, T)` fails. Training never triggers this,
    because windows are always full length. `generate()` from a short prompt does trigger it.
    Fix: use `E = self.rel_bias.weight[-T:]`.
-2. **`generate()` ignores `top_k`** (`model.py:242`).
+2. **Fixed** (PR #3). **`generate()` ignores `top_k`** (`model.py:242`).
 3. **Compiled checkpoints carry an `_orig_mod.` key prefix.** `train.py:180` compiles the model
    and `:333` saves `model.state_dict()`. Loading into an uncompiled model (`model_run.ipynb`)
    fails unless the prefix is stripped.
@@ -59,7 +59,7 @@ order.
 
 ## Hygiene / perf
 
-21. **Dead or stale code in `model.py`:**
+21. **Fixed** (PR #3; `Head` and the hardcoded `mlp_ratio` stay until Phase 2). **Dead or stale code in `model.py`:**
     - unused hyperparameters import
     - unused `Head` class
     - `FeedForward.dropout` is unused
@@ -71,4 +71,4 @@ order.
 23. **Heads run in a Python loop** with a manual softmax. There is no fused or flash path.
 24. **Device-specific autocast and logging.** Autocast and GradScaler are hardcoded to
     `"cuda"`, and "Compiling model for GPU" is printed on every device.
-25. **`model_run.ipynb` cell 7** plots the old scalar `rel_bias` shape, so it's stale.
+25. **Fixed** (PR #3). **`model_run.ipynb` cell 7** plots the old scalar `rel_bias` shape, so it's stale.

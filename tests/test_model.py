@@ -61,19 +61,63 @@ def test_overfits_one_batch(tiny_model, full_batch):
     assert loss.item() < 0.1
 
 
-@pytest.mark.xfail(strict=True, raises=RuntimeError, reason="#1 RelativeHead crashes when T < block_size")
+def test_n_embd_must_divide_by_n_head():
+    with pytest.raises(AssertionError, match="divisible"):
+        MusicTransformer(**{**TINY, "n_embd": 30})
+
+
 def test_short_sequence_forward(tiny_model):
     x = torch.randint(0, TINY["vocab_size"], (1, TINY["block_size"] // 2))
     logits, _ = tiny_model(x)
     assert logits.shape == (1, TINY["block_size"] // 2, TINY["vocab_size"])
 
 
-@pytest.mark.xfail(strict=True, reason="#2 generate() ignores top_k")
-def test_generate_top_k_1_is_greedy(tiny_model):
-    T = TINY["block_size"]
-    prompt = torch.randint(0, TINY["vocab_size"], (1, T))
-    out = tiny_model.generate(prompt, max_new_tokens=5, top_k=1)
+@pytest.mark.parametrize("T", [1, 5, 15])
+def test_prefix_logits_match_full_sequence(tiny_model, full_batch, T):
+    x, _ = full_batch
     with torch.no_grad():
-        for i in range(T, out.shape[1]):
-            logits, _ = tiny_model(out[:, i - T : i])
-            assert out[0, i] == logits[0, -1].argmax()
+        full, _ = tiny_model(x)
+        prefix, _ = tiny_model(x[:, :T])
+    assert torch.allclose(prefix, full[:, :T], atol=1e-5)
+
+
+def greedy_tokens(model, out, prompt_len):
+    """Argmax of the model's next-token logits at each generated position of `out`."""
+    T = model.block_size
+    with torch.no_grad():
+        return [
+            model(out[:, max(0, i - T) : i])[0][0, -1].argmax().item()
+            for i in range(prompt_len, out.shape[1])
+        ]
+
+
+@pytest.mark.parametrize("sampling", [dict(top_k=1), dict(top_p=1e-6)])
+def test_generate_narrowest_sampling_is_greedy(tiny_model, sampling):
+    prompt = torch.randint(0, TINY["vocab_size"], (1, 4))
+    out = tiny_model.generate(prompt, max_new_tokens=20, **sampling)
+    assert out[0, 4:].tolist() == greedy_tokens(tiny_model, out, 4)
+
+
+def test_generate_top_k_only_samples_from_top_k(tiny_model):
+    torch.manual_seed(0)
+    prompt = torch.randint(0, TINY["vocab_size"], (1, TINY["block_size"]))
+    with torch.no_grad():
+        top3 = tiny_model(prompt)[0][0, -1].topk(3).indices.tolist()
+    firsts = {tiny_model.generate(prompt, max_new_tokens=1, top_k=3)[0, -1].item() for _ in range(50)}
+    assert firsts <= set(top3) and len(firsts) > 1
+
+
+def test_generate_from_short_prompt():
+    torch.manual_seed(0)
+    model = MusicTransformer(**{**TINY, "block_size": 64})
+    prompt = torch.randint(0, TINY["vocab_size"], (2, 16))
+    out = model.generate(prompt, max_new_tokens=100, temperature=0.9, top_k=40, top_p=0.95)
+    assert out.shape == (2, 116)
+    assert torch.equal(out[:, :16], prompt)
+    assert int(out.min()) >= 0 and int(out.max()) < TINY["vocab_size"]
+
+
+def test_generate_restores_training_mode(tiny_model):
+    tiny_model.train()
+    tiny_model.generate(torch.zeros(1, 1, dtype=torch.long), max_new_tokens=2)
+    assert tiny_model.training

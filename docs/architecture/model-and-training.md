@@ -25,14 +25,15 @@ loss = cross_entropy(logits, targets)                ← no ignore_index (there 
 Each head owns these parameters:
 
 - `query`, `key`, `value` are `Linear(C, Dh, bias=False)`, with `Dh = C // n_head`.
-- `rel_bias` is `Embedding(block_size, Dh)`: one learned vector per relative distance
-  `0 … -(block_size-1)`.
+- `rel_bias` is `Embedding(block_size, Dh)`: one learned vector per relative distance.
+  Row `block_size-1` is distance 0 and row 0 is distance `-(block_size-1)`.
 
-The forward pass (`model.py:79-120`):
+The forward pass (`RelativeHead.forward`):
 
 1. `q, k, v` are projected from `x`.
-2. `S_rel = q @ Eᵀ` has shape (B, T, block_size). Row *i* holds q_i's affinity to every
-   relative distance.
+2. `E = rel_bias.weight[-T:]`, the last T rows, covering distances `-(T-1) … 0`: all a
+   length-T sequence can use. `S_rel = q @ Eᵀ` has shape (B, T, T). Row *i* holds q_i's
+   affinity to every relative distance.
 3. **Skew.** Pad one zero column on the left, reshape to (B, T+1, T), and drop the first row.
    This shifts row *i* left by (T-1-i), which turns "query × distance" into
    "query × key-position" without building the (T, T, Dh) tensor that Shaw et al. need.
@@ -43,14 +44,15 @@ The forward pass (`model.py:79-120`):
    `@ v`.
 
 This path is manual: heads run in a Python loop and there is no SDPA or flash attention. The
-`Head` class (`model.py:18`) uses `F.scaled_dot_product_attention`, but nothing uses `Head`
+`Head` class uses `F.scaled_dot_product_attention`, but nothing uses `Head`
 any more.
 
-> ⚠️ The skew assumes `T == block_size`. Training always satisfies this, because every window
-> is exactly `block_size` long. **Any shorter input crashes**, and that includes `generate()`
-> from a short prompt. See `docs/known-issues.md` #1.
+Any `T ≤ block_size` works. Because attention is causal and the bias depends only on
+distance, running the first T tokens alone gives the same logits as positions `0…T-1` of a
+full window; `tests/test_model.py::test_prefix_logits_match_full_sequence` checks this. (Before
+T2, `E` was the whole table and any `T < block_size` crashed, known issue #1.)
 
-### Initialisation (GPT-2 style, `model.py:193-215`)
+### Initialisation (GPT-2 style, `MusicTransformer.__init__` and `_init_weights`)
 
 - All Linear and Embedding weights are drawn from N(0, 0.02), and all biases are set to 0.
 - Residual output projections (`*proj.weight` and `mlp.2.weight`) are re-drawn with std
@@ -104,16 +106,25 @@ seen.
 
 ## Inference
 
-`MusicTransformer.generate(idx, max_new_tokens, temperature, top_k)` does plain multinomial
-sampling on `logits[:, -1] / temperature`, with the context cropped to `block_size`.
+`MusicTransformer.generate(idx, max_new_tokens, temperature, top_k, top_p)` samples one
+token at a time from `logits[:, -1]`, feeding the model the last `block_size` tokens. Any
+prompt length works.
 
-- `top_k` is accepted but not implemented.
-- There is no EOS stop.
-- The caller must call `.eval()` and wrap the call in `torch.no_grad()`.
+- `temperature` divides the logits: below 1 is more conservative, above 1 more random.
+- `top_k` keeps the k most likely tokens.
+- `top_p` (nucleus) keeps the smallest set of most likely tokens whose probability reaches
+  `top_p`.
+- It switches to eval mode and `no_grad` itself, and restores the previous mode afterwards.
+- There is no EOS stop and no KV cache: every step reruns the whole window.
 
-`playground/model_run.ipynb` loads `best.pt` and rebuilds the model from
-`ckpt["hyperparams"]`. It primes with a 512-token window and decodes with
-`REMI(params=data/tokenized/config/tokenizer.json)`, writing the result to `data/output/*.mid`.
+`playground/model_run.ipynb` loads `data/checkpoints/best.pt` (or `$MUSIC_LLM_CKPT`), strips
+the `_orig_mod.` key prefix that compiled runs save (known issue #3), and rebuilds the model
+from `ckpt["hyperparams"]`. It prompts with the first 64 tokens of a val song, generates 1024
+tokens with `temperature=0.9, top_k=40, top_p=0.95`, and decodes both the prompt and the
+output to `data/output/*.mid` with `REMI(params=data/tokenized/config/tokenizer.json)`. It
+also prints the **grammar error rate**: the share of generated tokens that break REMI's
+`Program → Pitch → Velocity → Duration` note structure. miditok drops broken notes when
+decoding, so an undertrained model can produce MIDI with no new notes at all.
 
 ## How the architecture got here (from the journal)
 
