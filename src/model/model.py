@@ -154,8 +154,11 @@ class Block(nn.Module):
         self.ln2 = nn.LayerNorm(n_embd)
 
     def forward(self, x):# recommended
-        x = x + self.mmha(self.ln1(x))
-        x = x + self.ffwd(self.ln2(x))
+        # record_function labels show up in torch.profiler output (train.py --profile_steps)
+        with torch.profiler.record_function("attention"):
+            x = x + self.mmha(self.ln1(x))
+        with torch.profiler.record_function("mlp"):
+            x = x + self.ffwd(self.ln2(x))
         return x
 
 

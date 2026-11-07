@@ -16,9 +16,9 @@ class RandomGuitarSeqDataset(Dataset):
             with open(fp) as f:
                 obj = json.load(f)
             ids = obj["ids"] if isinstance(obj, dict) else obj
-            if len(ids) > keep_threshold:
+            if len(ids) >= keep_threshold:
                 self.seqs.append(ids)
-                self.lengths.append(len(ids)- (block_size + 1))
+                self.lengths.append(len(ids) - block_size) # number of valid window starts
 
         assert len(self.seqs) > 0, "No sequences long enough for block_size"
 
