@@ -104,3 +104,16 @@ def test_load_checkpoint_strips_legacy_prefix(tmp_path):
     model = MusicTransformer(**TINY)
     torch.save({"model": {"_orig_mod." + k: v for k, v in model.state_dict().items()}}, tmp_path / "old.pt")
     MusicTransformer(**TINY).load_state_dict(load_checkpoint(tmp_path / "old.pt")["model"])
+
+
+
+def test_rng_state_restore_moves_tensors_to_cpu():
+    """map_location=device puts the saved RNG tensor on the GPU; set_rng_state must call .cpu() on it."""
+    from unittest.mock import MagicMock
+    from src.utils.train import rng_state, set_rng_state
+    state = rng_state()
+    expected = torch.rand(3)
+    on_device = MagicMock()
+    on_device.cpu.return_value = state["torch"]
+    set_rng_state({**state, "torch": on_device})
+    assert torch.equal(torch.rand(3), expected)

@@ -53,11 +53,12 @@ def rng_state():
 
 
 def set_rng_state(state):
+    """Restores RNG states; tensors may have been moved to a device by torch.load's map_location."""
     random.setstate(state["python"])
     np.random.set_state(state["numpy"])
-    torch.set_rng_state(state["torch"])
+    torch.set_rng_state(state["torch"].cpu())
     if "cuda" in state and torch.cuda.is_available():
-        torch.cuda.set_rng_state_all(state["cuda"])
+        torch.cuda.set_rng_state_all([s.cpu() for s in state["cuda"]])
 
 
 def git_commit():

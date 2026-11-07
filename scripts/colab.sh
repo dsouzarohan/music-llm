@@ -49,10 +49,10 @@ case "$cmd" in
     # torch is preinstalled on Colab; the rest comes from pyproject.toml
     colab install -s "$SESSION" "miditok==3.0.5.post1" "symusic>=0.5.7,<0.6" "music21>=9.3" "tqdm>=4.67"
     remote 60 "python -c 'import torch, miditok; print(\"torch\", torch.__version__, \"cuda\", torch.cuda.is_available(), torch.cuda.get_device_name(0) if torch.cuda.is_available() else \"\")'"
-    # Drive reads are slow per file; 64 parallel copies hide the latency. cp -n skips files already staged.
+    # Drive reads are slow per file; 64 parallel copies hide the latency. --update=none skips files already staged.
     remote 1800 "cd $DRIVE_DATA/tokenized && mkdir -p $LOCAL_DATA/tokenized/train-aug $LOCAL_DATA/tokenized/val && \
-      cp -rn config $LOCAL_DATA/tokenized/ && start=\$(date +%s) && \
-      find train-aug val -name '*.json' -print0 | xargs -0 -P 64 -I{} cp -n {} $LOCAL_DATA/tokenized/{} && \
+      cp -r --update=none config $LOCAL_DATA/tokenized/ && start=\$(date +%s) && \
+      find train-aug val -name '*.json' -print0 | xargs -0 -P 64 -I{} cp --update=none {} $LOCAL_DATA/tokenized/{} && \
       echo staged \$(ls $LOCAL_DATA/tokenized/train-aug | wc -l) train / \$(ls $LOCAL_DATA/tokenized/val | wc -l) val files in \$((\$(date +%s) - start))s"
     ;;
   train)
