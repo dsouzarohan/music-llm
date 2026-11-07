@@ -143,17 +143,27 @@ def resolve_run_dir(args):
 
 
 def profile_report(prof, device):
-    """Summary of forward time in the "attention"/"mlp" regions vs whole steps, then the op table."""
-    time_attr = "device_time_total" if device.type == "cuda" else "cpu_time_total"
+    """Where the profiled steps spent time: wall vs CPU vs GPU kernels, the forward "attention"/"mlp"
+    regions' share of device time, then the op table."""
     events = prof.key_averages()
-    totals = {e.key: getattr(e, time_attr) for e in events}
-    step = sum(v for k, v in totals.items() if k.startswith("ProfilerStep"))
-    lines = [f"{time_attr} per region (forward only; labels vanish under torch.compile, profile with --no-compile)"]
+    cpu_side = {e.key: e for e in events if e.device_type == torch.autograd.DeviceType.CPU}
+    wall = sum(e.cpu_time_total for k, e in cpu_side.items() if k.startswith("ProfilerStep"))
+    cpu = sum(e.self_cpu_time_total for e in events)
+    kernels = sum(e.self_device_time_total for e in events)
+    lines = [
+        f"profiled steps: wall {wall / 1e3:.1f} ms, CPU {cpu / 1e3:.1f} ms, device kernels {kernels / 1e3:.1f} ms"
+        + (f" (device busy {kernels / wall:.0%} of wall)" if kernels and wall else ""),
+        "forward regions (labels vanish under torch.compile, profile with --no-compile):",
+    ]
     for region in ("attention", "mlp"):
-        if region in totals and step:
-            lines.append(f"  {region:<10} {totals[region] / 1e3:10.1f} ms  {totals[region] / step:6.1%} of step time")
-    lines.append(f"  {'steps':<10} {step / 1e3:10.1f} ms")
-    sort_key = "cuda_time_total" if device.type == "cuda" else "cpu_time_total"
+        e = cpu_side.get(region)
+        if e is None:
+            continue
+        if kernels:
+            lines.append(f"  {region:<10} device {e.device_time_total / 1e3:9.1f} ms  {e.device_time_total / kernels:6.1%} of device time")
+        else:
+            lines.append(f"  {region:<10} CPU {e.cpu_time_total / 1e3:9.1f} ms  {e.cpu_time_total / wall:6.1%} of wall")
+    sort_key = "self_cuda_time_total" if device.type == "cuda" else "self_cpu_time_total"
     return "\n".join(lines) + "\n\n" + events.table(sort_by=sort_key, row_limit=30)
 
 

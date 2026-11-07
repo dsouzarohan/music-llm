@@ -3,8 +3,8 @@
 `scripts/colab.sh` wraps the Colab CLI (`google-colab-cli`) for this repo. For the CLI's own
 agent guide, run `colab skill`.
 
-> **Status:** scripted in T3–T5. The first end-to-end run is the T5 baseline; correct this doc
-> with anything that run turns up.
+> **Status:** run end to end on 2026-11-07 (T5) on an A100-SXM4-40GB, torch 2.14.1+cu130.
+> The lessons from that run are under "Gotchas" below.
 
 ## One-time setup
 
@@ -32,13 +32,31 @@ What each step does:
 - **setup** checks that Drive is mounted, then clones `BRANCH` into `/content/music-llm` (or
   hard-resets an existing clone to `origin/BRANCH`). It symlinks
   `/content/music-llm/data → MyDrive/Projects/music-llm/data` and installs the non-torch
-  dependencies; Colab's preinstalled torch is used. It finishes by printing the torch version
-  and GPU name.
-- **train** runs `python -m src.utils.train --config <config> [flags]` under `nohup`, logging to
-  `data/logs/train_<timestamp>.log`. Because `data/` is the Drive symlink, the log, the run
-  directory (`data/runs/<timestamp>-<name>/` with `metrics.jsonl` and checkpoints) all survive
-  a VM drop. To continue after a drop: `scripts/colab.sh train <config> --resume data/runs/<run>/epoch_N.pt`.
+  dependencies; Colab's preinstalled torch is used. It prints the torch version and GPU name,
+  then copies `tokenized/` from Drive to `/content/data-local` (about 60 s for ~20k files).
+- **train** runs `python -u -m src.utils.train --config <config> --data_root /content/data-local
+  --runs_dir data/runs [flags]` under `nohup`, logging to `data/logs/train_<timestamp>.log`. It
+  reads tokens from local disk and writes everything else to Drive: the log and the run directory
+  (`data/runs/<timestamp>-<name>/` with `metrics.jsonl` and checkpoints) survive a VM drop. To continue after a drop: `scripts/colab.sh train <config> --resume data/runs/<run>/epoch_N.pt`.
 - Extra flags pass through, e.g. `scripts/colab.sh train configs/colab-186m-jan2026.toml --epochs 2 --profile_steps 10 --no-compile`.
+
+## Gotchas (found in the first run)
+
+- **Drive is slow for many small files.** Reading the 20k token files straight from the Drive
+  mount ran at ~0.2 MB/s, so data loading would have taken longer than training. Each file is a
+  network round trip; 64 parallel `cp`s hide that latency, so setup stages the corpus locally.
+- **Python buffers stdout when it's redirected to a file**, so the log stayed empty. `train`
+  uses `python -u`.
+- **`a && b & c` backgrounds the whole `a && b` chain**, not just `b`, and that subshell keeps
+  the `exec` output pipe open until training ends, leaving the kernel BUSY. The launch command
+  wraps only the `nohup` in braces: `a && { nohup b & }`.
+- **While the kernel is busy, `colab exec` can't run**, but `colab console` (a separate tmux
+  shell) still can. Pipe a command in followed by a short `sleep`, or the console closes before
+  printing.
+- **`ls | wc -l` undercounts the token files**: some filenames contain newlines. Count with
+  Python or `find -print0`.
+- **`colab new` can stop for a browser auth code** when its saved login lapses or it asks for
+  new scopes (it requested `drive.file`). Run it from your own terminal.
 
 ## Constraints that shaped the script
 

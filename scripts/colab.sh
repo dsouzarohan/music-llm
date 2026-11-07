@@ -3,7 +3,8 @@
 #
 #   scripts/colab.sh new                      provision the VM (GPU=A100 by default)
 #   colab drivemount -s music                 HUMAN step: mount Drive (interactive)
-#   scripts/colab.sh setup                    clone BRANCH (default master), link Drive data, install deps
+#   scripts/colab.sh setup                    clone BRANCH (default master), link Drive data, install deps,
+#                                             copy tokenized/ from Drive to local disk
 #   scripts/colab.sh train <config> [flags]   launch train.py detached; log goes to Drive data/logs/
 #   scripts/colab.sh logs [n]                 tail the latest training log
 #   scripts/colab.sh status                   session status and nvidia-smi
@@ -19,6 +20,7 @@ BRANCH="${BRANCH:-master}"
 REPO_URL="https://github.com/dsouzarohan/music-llm.git"
 DRIVE_DATA="/content/drive/MyDrive/Projects/music-llm/data"
 VM_REPO="/content/music-llm"
+LOCAL_DATA="/content/data-local"
 
 remote() {
   # remote <timeout_s> <bash command>: runs a shell command on the VM, streams output, propagates failure
@@ -47,13 +49,20 @@ case "$cmd" in
     # torch is preinstalled on Colab; the rest comes from pyproject.toml
     colab install -s "$SESSION" "miditok==3.0.5.post1" "symusic>=0.5.7,<0.6" "music21>=9.3" "tqdm>=4.67"
     remote 60 "python -c 'import torch, miditok; print(\"torch\", torch.__version__, \"cuda\", torch.cuda.is_available(), torch.cuda.get_device_name(0) if torch.cuda.is_available() else \"\")'"
+    # Drive reads are slow per file; 64 parallel copies hide the latency. cp -n skips files already staged.
+    remote 1800 "cd $DRIVE_DATA/tokenized && mkdir -p $LOCAL_DATA/tokenized/train-aug $LOCAL_DATA/tokenized/val && \
+      cp -rn config $LOCAL_DATA/tokenized/ && start=\$(date +%s) && \
+      find train-aug val -name '*.json' -print0 | xargs -0 -P 64 -I{} cp -n {} $LOCAL_DATA/tokenized/{} && \
+      echo staged \$(ls $LOCAL_DATA/tokenized/train-aug | wc -l) train / \$(ls $LOCAL_DATA/tokenized/val | wc -l) val files in \$((\$(date +%s) - start))s"
     ;;
   train)
     config="${1:?usage: scripts/colab.sh train <config.toml> [train.py flags]}"
     shift
     flags=$(printf ' %q' "$@")
+    # braces keep `&` scoped to nohup; -u unbuffers stdout so the log fills live
     remote 30 "mkdir -p $VM_REPO/data/logs && cd $VM_REPO && log=data/logs/train_\$(date +%Y%m%d_%H%M%S).log && \
-      nohup python -m src.utils.train --config $config $flags > \$log 2>&1 < /dev/null & echo started pid \$! log $VM_REPO/\$log"
+      { nohup python -u -m src.utils.train --config $config --data_root $LOCAL_DATA --runs_dir data/runs $flags > \$log 2>&1 < /dev/null & } && \
+      echo started pid \$! log $VM_REPO/\$log"
     ;;
   logs)
     remote 30 "tail -n ${1:-20} \$(ls -t $VM_REPO/data/logs/train_*.log | head -1)"
@@ -69,7 +78,7 @@ case "$cmd" in
     colab stop -s "$SESSION"
     ;;
   *)
-    sed -n '2,13p' "$0"
+    sed -n '2,14p' "$0"
     exit 1
     ;;
 esac
