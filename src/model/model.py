@@ -2,17 +2,6 @@ import torch
 import torch.nn as nn
 from torch.nn import functional as F
 import math
-from src.utils.hyperparameters import BATCH_SIZE, BLOCK_SIZE, EMBEDDING_DIM, N_LAYER, N_HEAD, DROPOUT, VOCAB_SIZE
-
-
-# hyper-parameters
-# batch_size = BATCH_SIZE
-# block_size = BLOCK_SIZE
-# n_embd = EMBEDDING_DIM
-# vocab_size = VOCAB_SIZE
-# n_layer = N_LAYER
-# n_head = N_HEAD
-# dropout = DROPOUT
 
 
 class Head(nn.Module):
@@ -69,9 +58,8 @@ class RelativeHead(nn.Module):
         self.key = nn.Linear(n_embd, head_size, bias=False) # (C, Dh)
         self.value = nn.Linear(n_embd, head_size, bias=False)
 
-        # scalar relative bias per distance
-        # self.rel_bias = nn.Embedding(2 * block_size - 1, head_size) # (2*T - 1, dH)
-        self.rel_bias = nn.Embedding(block_size, head_size) # (T, dH)
+        # one learned vector per relative distance; row block_size-1 is distance 0, row 0 is distance -(block_size-1)
+        self.rel_bias = nn.Embedding(block_size, head_size) # (block_size, dH)
         self.dropout = nn.Dropout(self.dropout_p)
 
         self.register_buffer("tril", torch.tril(torch.ones(block_size, block_size)))
@@ -85,7 +73,8 @@ class RelativeHead(nn.Module):
 
         # Compute relative content scores (Q @ E)
         # In this matrix, columns represent "Relative Distances", not absolute keys:
-        E = self.rel_bias.weight # (T, Dh)
+        # the last T rows cover distances -(T-1)..0, which is all a length-T sequence uses
+        E = self.rel_bias.weight[-T:] # (T, Dh)
         s_rel = q @ E.transpose(-2, -1) # (B, T, Dh) @ (Dh, T) = (B, T, T)
 
         # Skewing (Pad -> Resize -> Slice)
@@ -123,6 +112,7 @@ class RelativeHead(nn.Module):
 class MultiHeadAttention(nn.Module):
     def __init__(self, num_heads, n_embd, dropout, block_size):
         super().__init__()
+        assert n_embd % num_heads == 0, f"n_embd ({n_embd}) must be divisible by n_head ({num_heads})"
         self.num_heads = num_heads
         self.head_size = n_embd // num_heads # try to keep head_size/head_dim = 64/96/128
 
@@ -149,12 +139,9 @@ class FeedForward(nn.Module):
             nn.Linear(n_embd * self.mlp_ratio, n_embd),
             nn.Dropout(dropout)
         )
-        self.dropout = nn.Dropout(dropout)
 
     def forward(self, x):
-        x = self.mlp(x)
-        # print("MLP forward", x)
-        return x
+        return self.mlp(x)
 
 
 class Block(nn.Module):
@@ -239,13 +226,34 @@ class MusicTransformer(nn.Module):
         return logits, loss
 
     @torch.no_grad()
-    def generate(self, idx, max_new_tokens=500, temperature=1.0, top_k=None):
-        for _ in range(max_new_tokens):
-            idx_cond = idx[:, -self.block_size:]
-            logits, loss = self(idx_cond)
-            logits = logits[:, -1, :] / max(temperature, 1e-6)  # important, we only care of the last step
-            # we also divide by temperature or 1e-6 to avoid divide by zero
-            probs = F.softmax(logits, dim=1)
-            idx_next = torch.multinomial(probs, num_samples=1)
-            idx = torch.cat((idx, idx_next), dim=1)
+    def generate(self, idx, max_new_tokens=500, temperature=1.0, top_k=None, top_p=None):
+        """Appends max_new_tokens sampled tokens to idx (B, T) and returns (B, T + max_new_tokens).
+
+        Any prompt length works; only the last block_size tokens are fed to the model.
+        top_k keeps the k most likely tokens; top_p keeps the smallest set of most likely tokens
+        whose probabilities sum to at least top_p. Runs in eval mode and restores the previous mode.
+        """
+        was_training = self.training
+        self.eval()
+        try:
+            for _ in range(max_new_tokens):
+                idx_cond = idx[:, -self.block_size:]
+                logits, _ = self(idx_cond)
+                logits = logits[:, -1, :] / max(temperature, 1e-6)  # important, we only care of the last step
+                # we also divide by temperature or 1e-6 to avoid divide by zero
+                if top_k is not None:
+                    kth = torch.topk(logits, min(top_k, logits.size(-1))).values[:, [-1]]
+                    logits = logits.masked_fill(logits < kth, float("-inf"))
+                if top_p is not None:
+                    sorted_logits, sorted_idx = torch.sort(logits, descending=True)
+                    sorted_probs = F.softmax(sorted_logits, dim=-1)
+                    # drop a token once the tokens ranked above it already reach top_p
+                    drop = sorted_probs.cumsum(dim=-1) - sorted_probs >= top_p
+                    sorted_logits = sorted_logits.masked_fill(drop, float("-inf"))
+                    logits = torch.full_like(logits, float("-inf")).scatter(1, sorted_idx, sorted_logits)
+                probs = F.softmax(logits, dim=-1)
+                idx_next = torch.multinomial(probs, num_samples=1)
+                idx = torch.cat((idx, idx_next), dim=1)
+        finally:
+            self.train(was_training)
         return idx
