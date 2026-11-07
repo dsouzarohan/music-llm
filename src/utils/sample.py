@@ -52,7 +52,9 @@ def main():
     del ckpt
     tokenizer = REMI(params=data / "config" / "tokenizer.json")
 
-    songs = sorted((data / "val").glob("*.json"))
+    need = args.prompt_len + args.max_new_tokens
+    songs = [s for s in sorted((data / "val").glob("*.json")) if len(json.loads(s.read_text())["ids"]) >= need]
+    print(f"{len(songs)} val songs with at least {need} tokens")
     picks = [songs[i * len(songs) // args.n] for i in range(args.n)]
     autocast = torch.autocast("cuda", dtype=torch.bfloat16) if device.type == "cuda" else torch.autocast("cpu", enabled=False)
     rows = []
@@ -62,7 +64,7 @@ def main():
         torch.manual_seed(i)
         t0 = time.perf_counter()
         with autocast:
-            out = model.generate(torch.tensor([ids[:P]], device=device), max_new_tokens=args.max_new_tokens,
+            out = model.generate(torch.tensor([ids[:P]], dtype=torch.long, device=device), max_new_tokens=args.max_new_tokens,
                                  temperature=args.temperature, top_k=args.top_k, top_p=args.top_p)[0].tolist()
         secs = time.perf_counter() - t0
         full, prompt = tokenizer.decode(out), tokenizer.decode(out[:P])

@@ -72,3 +72,9 @@ order.
 24. **Fixed** (PR #4). **Device-specific autocast and logging.** Autocast and GradScaler are hardcoded to
     `"cuda"`, and "Compiling model for GPU" is printed on every device.
 25. **Fixed** (PR #3). **`model_run.ipynb` cell 7** plots the old scalar `rel_bias` shape, so it's stale.
+26. **Checkpoints are ~3× larger than needed.** Each `RelativeHead` registers its causal mask
+    `tril` (`block_size²` floats) as a persistent buffer, so it's saved in every checkpoint:
+    2048² × 4 B × 12 heads × 24 layers ≈ 4.8 GB of constant data. A 186M checkpoint is 6.7 GB
+    instead of ~2.2 GB (weights + AdamW moments), and `save_every = 5` wrote ~80 GB to Drive in
+    the T5 baseline. Phase 2's SDPA attention removes the buffer; until then, prefer a larger
+    `save_every` and delete intermediate `epoch_N.pt` files once a run is done.
