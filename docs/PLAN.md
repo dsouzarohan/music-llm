@@ -1,5 +1,8 @@
 # Plan: Phase 1, Foundations
 
+**Story status: done** (2026-11-08). T1–T5 shipped in PRs #2, #3 and #4. Phase 2 is next
+(`docs/ROADMAP.md`).
+
 **Story:** make the training code trustworthy and verifiable before changing what it does.
 After this phase:
 
@@ -162,7 +165,7 @@ Also added: `--profile_steps` (writes `profile.txt` with the attention/MLP split
 
 ## T5 · Scripted Colab run and baseline
 
-**Status:** in progress: `scripts/colab.sh` written; the A100 run is next
+**Status:** done (PR #4)
 
 Test `docs/colab.md` end to end, and measure where compute goes.
 
@@ -177,10 +180,12 @@ Test `docs/colab.md` end to end, and measure where compute goes.
 
 **Acceptance:**
 
-- [ ] Every step except drivemount runs from a script.
-- [ ] A journal entry `docs/journal/<date>.md` records MFU, tokens/s, the profile summary and
-      the baseline val loss.
-- [ ] `docs/architecture/scaling.md` run history is updated.
+- [x] Every step except drivemount runs from a script. (`colab new` may also need a browser auth
+      code; see `docs/colab.md`.)
+- [x] A journal entry `docs/journal/<date>.md` records MFU, tokens/s, the profile summary and
+      the baseline val loss. (`docs/journal/2026-11-08.md`: val **3.498**, ppl 33.1, 22.2k tok/s,
+      MFU 12.8%.)
+- [x] `docs/architecture/scaling.md` run history is updated.
 
 ---
 

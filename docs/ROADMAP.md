@@ -10,8 +10,8 @@ CLaMP-DPO) is the reference recipe. The current bottleneck is data, not compute.
 
 | # | Phase | Status |
 |---|---|---|
-| 1 | Foundations | **in progress** → `docs/PLAN.md` |
-| 2 | Modern block and small rebaseline | planned |
+| 1 | Foundations | **done** 2026-11-08: baseline val 3.498 (`docs/journal/2026-11-08.md`) |
+| 2 | Modern block and small rebaseline | next |
 | 3 | Data at scale | planned |
 | 4 | Guitar tokenizer | planned |
 | 5 | Transfer and SFT | planned |
@@ -34,8 +34,14 @@ Make the training code trustworthy and verifiable before changing what it does.
 
 Bring the block up to current practice and find out whether depth or data is the bottleneck.
 
+- Compute: move training to Lightning.ai (SSH, persistent disk). A generic `scripts/remote.sh`
+  over SSH (sync, launch detached, logs, fetch) plus `docs/lightning.md`; copy the corpus from
+  Drive once. Colab stays usable while its credits last.
 - RoPE in place of absolute pos-emb + skewed `rel_bias`; `scaled_dot_product_attention` on
-  `(B,H,T,D)`; RMSNorm with QK-norm; SwiGLU; tied embeddings; weight-decay groups.
+  `(B,H,T,D)`; RMSNorm with QK-norm; SwiGLU; tied embeddings; weight-decay groups. This also
+  removes the per-head `tril` buffers (#26) and the Python head loop (#23).
+- A KV cache for `generate()` (a 512-token sample takes ~108 s on an A100 without one).
+- Baseline to beat: val **3.498** on the fixed val set; 12.8% MFU, attention 38% of GPU time.
 - Train a ~30M model with many more optimizer steps. Compare it with the 186M baseline at
   equal compute.
 
