@@ -62,4 +62,5 @@ Notes on reading the entries:
 | [2025-12-08](2025-12-08.md) | Scaled bias with content scores; clip 0.5; resume from `best.pt` |
 | [2025-12-27](2025-12-27.md) | Full 50-epoch Colab run (12L): val 4.20 (ppl 67) |
 | [2025-12-29](2025-12-29.md) | GELU + GPT-2 init + 24 layers (186M): val 3.72 (ppl 41); data diagnosis |
-| [2026-01-31](2026-01-31.md) | Found and fixed Q = K = V; val 3.46 (ppl 32), current best; scraper plan |
+| [2026-01-31](2026-01-31.md) | Found and fixed Q = K = V; val 3.46 (ppl 32); scraper plan |
+| [2026-11-08](2026-11-08.md) | Phase 1 baseline on Colab A100 40GB: val 3.498 (ppl 33.1) on the fixed val set; MFU 12.8% compiled, 1.7% eager; attention is 38% of GPU time |

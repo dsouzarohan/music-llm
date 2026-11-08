@@ -26,7 +26,11 @@ first run with correct Q/K/V projections (commit 997d968).
 | 2025-11-28 | 143 artists, 49M tokens, vocab 3000 | small | 3.03 / 21 | Q=K=V bug |
 | 2025-12-27 | same, vocab 3500 | 12L/768/2048 | 4.20 / 67 | Q=K=V bug |
 | 2025-12-29 | same | 24L, GELU, GPT-2 init | 3.72 / 41 | Q=K=V bug |
-| 2026-01-31 | same | 24L, **Q/K/V fixed** | **3.46 / 32** | current best |
+| 2026-01-31 | same | 24L, **Q/K/V fixed** | 3.46 / 32 | random val windows |
+| 2026-11-08 | same | 24L, Phase 1 fixes, micro-batch 4 | **3.498 / 33.1** | **baseline**: fixed val set (512 windows); 22.2k tok/s, MFU 12.8% on A100 40GB |
+
+**From 2026-11-08 on, val loss is measured on the fixed val set**, so rows after it compare
+directly with that baseline. Earlier rows used 400 random val windows per epoch.
 
 **These numbers are not directly comparable across rows.** A BPE token covers more music at
 vocab 3500 than at 3000, so the same music produces fewer tokens, and each token carries more

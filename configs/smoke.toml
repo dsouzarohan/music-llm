@@ -1,0 +1,12 @@
+# Tiny CPU/MPS run on the synthetic corpus (tests/synthetic.py). Used by scripts/smoke-train.sh.
+name = "smoke"
+vocab_size = 64
+block_size = 64
+n_layer = 2
+n_head = 2
+embedding_dim = 64
+batch_size = 8
+micro_batch_size = 8
+epochs = 1
+train_windows = 2000
+val_windows = 64

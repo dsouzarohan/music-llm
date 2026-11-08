@@ -1,18 +1,25 @@
 # train.py
 
-import os
+import argparse
+import json
 import math
 import random
+import subprocess
+import time
+from contextlib import nullcontext
+from datetime import datetime
 from pathlib import Path
-import argparse
 
 import numpy as np
 import torch
 from torch.utils.data import DataLoader
 
 from src.model.model import MusicTransformer
+from src.utils.checkpoint import load_checkpoint, model_hyperparams, save_checkpoint
+from src.utils.config import apply_config_file
 from src.utils.data.guitar_dataset import GuitarDataset
 from src.utils.data.random_guitar_seq_dataset import RandomGuitarSeqDataset
+from src.utils.metrics import device_peak_flops, flops_per_token, mfu
 
 from src.utils.hyperparameters import (
     BLOCK_SIZE,
@@ -37,18 +44,51 @@ def set_seed(seed: int = 42):
     np.random.seed(seed)
     torch.cuda.manual_seed_all(seed)
 
-# parses args, can save multiple run configs for this script
-def parse_args():
-    parser = argparse.ArgumentParser()
 
-    parser.add_argument("--data_root", type=str, default="../../data/")
+def rng_state():
+    state = {"python": random.getstate(), "numpy": np.random.get_state(), "torch": torch.get_rng_state()}
+    if torch.cuda.is_available():
+        state["cuda"] = torch.cuda.get_rng_state_all()
+    return state
+
+
+def set_rng_state(state):
+    """Restores RNG states; tensors may have been moved to a device by torch.load's map_location."""
+    random.setstate(state["python"])
+    np.random.set_state(state["numpy"])
+    torch.set_rng_state(state["torch"].cpu())
+    if "cuda" in state and torch.cuda.is_available():
+        torch.cuda.set_rng_state_all([s.cpu() for s in state["cuda"]])
+
+
+def git_commit():
+    try:
+        return subprocess.run(["git", "rev-parse", "--short", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()
+    except (OSError, subprocess.CalledProcessError):
+        return None
+
+
+def build_parser():
+    parser = argparse.ArgumentParser(description="Train MusicTransformer. Precedence: CLI flag > --config TOML > defaults.")
+
+    parser.add_argument("--config", type=str, default=None, help="TOML run spec whose keys are these options")
+    parser.add_argument("--name", type=str, default="run", help="Run name, used in the run directory name")
+    parser.add_argument("--data_root", type=str, default="data")
+    parser.add_argument("--runs_dir", type=str, default=None, help="Parent of run directories (default: {data_root}/runs)")
+    parser.add_argument("--run_dir", type=str, default=None, help="Exact run directory (default: {runs_dir}/<timestamp>-<name>, or the resumed checkpoint's directory)")
     parser.add_argument("--epochs", type=int, default=20)
     parser.add_argument("--batch_size", type=int, default=BATCH_SIZE)
     parser.add_argument("--micro_batch_size", type=int, default=MICRO_BATCH_SIZE)
-    parser.add_argument("--checkpoint_dir", type=str, default="../../data/checkpoints")
-    parser.add_argument("--use_guitar_ds", action="store_true", help="Use GuitarDataset instead of RandomGuitarWindowDataset")
-    parser.add_argument("--save_every", type=int, default=0, help="Save checkpoint every N epochs (0 = only best + last)")
+    parser.add_argument("--train_windows", type=int, default=2000, help="Random training windows per epoch")
+    parser.add_argument("--val_windows", type=int, default=512, help="Fixed validation windows, evenly spaced over the val set")
+    parser.add_argument("--use_guitar_ds", action="store_true", help="Use GuitarDataset instead of RandomGuitarSeqDataset for training")
+    parser.add_argument("--save_every", type=int, default=0, help="Save checkpoint every N epochs (0 = only best + final)")
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--device", type=str, default="auto", help="auto, cuda, mps or cpu")
+    parser.add_argument("--compile", action=argparse.BooleanOptionalAction, default=True, help="torch.compile the model")
+    parser.add_argument("--grad_clip", type=float, default=0.5)
+    parser.add_argument("--profile_steps", type=int, default=0, help="Profile this many micro-steps of the first epoch into {run_dir}/profile.txt")
+    parser.add_argument("--peak_flops", type=float, default=None, help="Device peak FLOP/s for MFU (default: looked up for known GPUs)")
 
     # Hyperparameters arguments (defaults loaded from src.utils.hyperparameters)
     parser.add_argument("--block_size", type=int, default=BLOCK_SIZE, help="Context window size")
@@ -57,78 +97,116 @@ def parse_args():
     parser.add_argument("--n_head", type=int, default=N_HEAD, help="Number of attention heads")
     parser.add_argument("--dropout", type=float, default=DROPOUT, help="Dropout rate")
     parser.add_argument("--vocab_size", type=int, default=VOCAB_SIZE, help="Vocabulary size")
-    parser.add_argument("--learning_rate", type=float, default=LEARNING_RATE, help="Learning rate")
+    parser.add_argument("--learning_rate", type=float, default=LEARNING_RATE, help="Peak learning rate")
 
     # Training run arguments
-    parser.add_argument("--resume", type=str, default=None, help="Path to checkpoint to resume training (loads optimizer)")
-    parser.add_argument("--finetune_from", type=str, default=None)
+    parser.add_argument("--resume", type=str, default=None, help="Checkpoint to resume (model, optimizer, scheduler, RNG)")
+    parser.add_argument("--finetune_from", type=str, default=None, help="Checkpoint to load model weights from, with a fresh optimizer")
+
+    return parser
 
 
-    return parser.parse_args()
+# parses args, can save multiple run configs for this script
+def parse_args(argv=None):
+    parser = build_parser()
+    pre, _ = parser.parse_known_args(argv)
+    if pre.config:
+        apply_config_file(parser, pre.config)
+    return parser.parse_args(argv)
 
-def main():
-    args = parse_args()
+
+def pick_device(name):
+    if name != "auto":
+        return torch.device(name)
+    if torch.cuda.is_available():
+        return torch.device('cuda')
+    if torch.backends.mps.is_available():
+        return torch.device('mps') # metal for Apple Silicon
+    return torch.device('cpu')
+
+
+def accumulation_groups(num_micro_batches, grad_accum_steps):
+    """Size of the accumulation group each micro-batch belongs to; the last group may be smaller."""
+    sizes = []
+    for start in range(0, num_micro_batches, grad_accum_steps):
+        size = min(grad_accum_steps, num_micro_batches - start)
+        sizes += [size] * size
+    return sizes
+
+
+def resolve_run_dir(args):
+    if args.run_dir:
+        return Path(args.run_dir)
+    if args.resume:
+        return Path(args.resume).parent
+    runs_dir = Path(args.runs_dir) if args.runs_dir else Path(args.data_root) / "runs"
+    return runs_dir / f"{datetime.now():%Y%m%d-%H%M%S}-{args.name}"
+
+
+def profile_report(prof, device):
+    """Where the profiled steps spent time: wall vs CPU vs GPU kernels, the forward "attention"/"mlp"
+    regions' share of device time, then the op table."""
+    events = prof.key_averages()
+    cpu_side = {e.key: e for e in events if e.device_type == torch.autograd.DeviceType.CPU}
+    wall = sum(e.cpu_time_total for k, e in cpu_side.items() if k.startswith("ProfilerStep"))
+    cpu = sum(e.self_cpu_time_total for e in events)
+    kernels = sum(e.self_device_time_total for e in events)
+    lines = [
+        f"profiled steps: wall {wall / 1e3:.1f} ms, CPU {cpu / 1e3:.1f} ms, device kernels {kernels / 1e3:.1f} ms"
+        + (f" (device busy {kernels / wall:.0%} of wall)" if kernels and wall else ""),
+        "forward regions (labels vanish under torch.compile, profile with --no-compile):",
+    ]
+    for region in ("attention", "mlp"):
+        e = cpu_side.get(region)
+        if e is None:
+            continue
+        if kernels:
+            lines.append(f"  {region:<10} device {e.device_time_total / 1e3:9.1f} ms  {e.device_time_total / kernels:6.1%} of device time")
+        else:
+            lines.append(f"  {region:<10} CPU {e.cpu_time_total / 1e3:9.1f} ms  {e.cpu_time_total / wall:6.1%} of wall")
+    sort_key = "self_cuda_time_total" if device.type == "cuda" else "self_cpu_time_total"
+    return "\n".join(lines) + "\n\n" + events.table(sort_by=sort_key, row_limit=30)
+
+
+def evaluate(model, val_dl, device, autocast):
+    model.eval()
+    val_loss, total_tokens = 0.0, 0
+    with torch.no_grad(), autocast():
+        for x, y in val_dl:
+            x, y = x.to(device), y.to(device)
+            _, l = model(x, y) # loss already mean per-token for batch
+            val_loss += l.item() * y.numel()
+            total_tokens += y.numel()
+    return val_loss / total_tokens
+
+
+def train(args):
+    """Runs training and returns the run directory."""
     set_seed(args.seed)
 
-    # -------------
-    # define paths
-    # -------------
-
     data_root = Path(args.data_root)
-    midi_folder = data_root / "midi/"
-    augmented_folder = data_root / "augmented/"
-    tokenized_folder = data_root / "tokenized/"
-    splits_folder = data_root / "splits/"
-    train_tok_folder = tokenized_folder / "train-aug/"
-    val_tok_folder = tokenized_folder / "val/"
-    train_midi_folder = data_root / "train_midi/"
-    val_midi_folder = data_root / "val-midi/"
+    train_tok_folder = data_root / "tokenized" / "train-aug"
+    val_tok_folder = data_root / "tokenized" / "val"
+    run_dir = resolve_run_dir(args)
+    run_dir.mkdir(parents=True, exist_ok=True)
 
-    os.makedirs(args.checkpoint_dir, exist_ok=True)
-
-    # ----------------------
-    # define hyperparameters
-    # ----------------------
-
-    # Now using values from args (which default to the imports if not specified)
-    batch_size = args.batch_size
-    block_size = args.block_size
-    n_embd = args.embedding_dim
-    vocab_size = args.vocab_size
-    n_layer = args.n_layer
-    n_head = args.n_head
-    dropout = args.dropout
-    learning_rate = args.learning_rate
-    micro_batch_size = args.micro_batch_size
-    grad_accum_steps = batch_size // micro_batch_size
+    grad_accum_steps = max(1, args.batch_size // args.micro_batch_size) # handles cases if our batch size is not perfectly divisible
 
     # -------------
-    # device
+    # device and AMP (Automatic Mixed Precision, CUDA only)
     # -------------
 
-    if torch.cuda.is_available():
-        device = torch.device('cuda')
-    elif torch.backends.mps.is_available():
-        device = torch.device('mps') # metal for Apple Silicon
-    else:
-        device = torch.device('cpu')
-
-    # ---------------------------------
-    # AMP (Automatic Mixed Precision)
-    # ---------------------------------
-
+    device = pick_device(args.device)
     torch.backends.cuda.matmul.allow_tf32 = True
     torch.set_float32_matmul_precision("high")
 
-    use_amp = (device.type == "cuda")
-    if use_amp and hasattr(torch.cuda, "is_bf16_supported") and torch.cuda.is_bf16_supported():
-        # uses brainfloat 16
-        amp_dtype = torch.bfloat16
-    else:
-        amp_dtype = torch.float16
+    use_amp = device.type == "cuda"
+    amp_dtype = torch.bfloat16 if use_amp and torch.cuda.is_bf16_supported() else torch.float16
+    use_scaler = use_amp and amp_dtype == torch.float16 # bf16 has fp32's range, so it needs no loss scaling
+    autocast = lambda: torch.autocast(device_type=device.type, dtype=amp_dtype) if use_amp else nullcontext()
+    scaler = torch.amp.GradScaler(device.type, enabled=use_scaler)
 
-    print("Using device:", device)
-    print("AMP enabled?", use_amp, "dtype: ", amp_dtype)
+    print(f"Device {device}, AMP {amp_dtype if use_amp else 'off'}, run dir {run_dir}")
 
     # ---------------------------
     # datasets and dataloaders
@@ -136,250 +214,190 @@ def main():
 
     train_files = sorted(train_tok_folder.glob("*.json"))
     val_files = sorted(val_tok_folder.glob("*.json"))
-
-    print(f"{len(train_files)} training files")
-    print(f"{len(val_files)} validation files")
-
     random.shuffle(train_files)
 
     if args.use_guitar_ds:
-        print("Using GuitarDataset (not recommended)")
-        train_ds = GuitarDataset(block_size=block_size, stride=block_size // 2, file_list=train_files)
-        val_ds = GuitarDataset(block_size=block_size, stride=block_size // 2, file_list=val_files)
+        train_ds = GuitarDataset(block_size=args.block_size, stride=args.block_size // 2, file_list=train_files)
     else:
-        print("Using RandomGuitarWindowDataset")
-        print("block size", block_size)
-        train_ds = RandomGuitarSeqDataset(block_size=block_size, epoch_len=2000, file_list=train_files)
-        val_ds = RandomGuitarSeqDataset(block_size=block_size, epoch_len=400, file_list=val_files)
+        train_ds = RandomGuitarSeqDataset(block_size=args.block_size, epoch_len=args.train_windows, file_list=train_files)
+    val_ds = GuitarDataset(block_size=args.block_size, stride=args.block_size, file_list=val_files, max_windows=args.val_windows)
 
+    train_dl = DataLoader(train_ds, batch_size=args.micro_batch_size, shuffle=True, drop_last=True)
+    val_dl = DataLoader(val_ds, batch_size=args.micro_batch_size * 2, shuffle=False) # no gradients stored, so larger batches fit
 
-    # Use the batch_size variable from args or default
-    train_dl = DataLoader(train_ds, batch_size=micro_batch_size, shuffle=True, drop_last=True)
-    val_dl = DataLoader(val_ds, batch_size=micro_batch_size * 2, shuffle=True, drop_last=True) # validation dataset loader can handle slightly larger batches since no gradients are stored
-
-    print("Training tokens count:", train_dl.dataset.total_tokens)
-    print("Validation tokens count:", val_dl.dataset.total_tokens)
+    print(f"Train: {len(train_files)} files, {train_ds.total_tokens} tokens, {len(train_ds)} windows/epoch")
+    print(f"Val:   {len(val_files)} files, {val_ds.total_tokens} tokens, {len(val_ds)} fixed windows")
 
     # -------
     # model
     # -------
 
-    model = MusicTransformer(
-        vocab_size, n_embd, n_head, n_layer, block_size, dropout
-    ).to(device)
-    print("Launching MusicTransformer model with following hyperparameters")
-    print("Vocabulary (number of different tokens)", vocab_size)
-    print("Token embedding dimensionality", n_embd)
-    print("Number of layers", n_layer)
-    print("Number of attention heads", n_head)
-    print("Dropout", dropout)
-    print(f"Setting Transformer context window to {block_size}, with {batch_size} batch(es) and with a micro batch size of {micro_batch_size}")
+    model = MusicTransformer(args.vocab_size, args.embedding_dim, args.n_head, args.n_layer, args.block_size, args.dropout).to(device)
+    n_params = sum(p.numel() for p in model.parameters())
+    flops_tok = flops_per_token(n_params, args.n_layer, args.embedding_dim, args.block_size)
+    peak = args.peak_flops or device_peak_flops(device)
+    print(f"Parameters {n_params:,}, {flops_tok / 1e9:.2f} GFLOP/token, peak {peak or 'unknown'} FLOP/s")
 
-    if hasattr(torch, "compile"):
-        print("Compiling model for GPU")
-        model = torch.compile(model)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=args.learning_rate, betas=(0.9, 0.95))
 
-    # AdamW and scaler
-    optimizer = torch.optim.AdamW(model.parameters(),
-                                  lr=learning_rate, betas=(0.9, 0.95))
-    scaler = torch.amp.GradScaler("cuda", enabled=(use_amp and amp_dtype == torch.float16))
+    num_micro_batches = len(train_dl) # number of batches per epoch
+    steps_per_epoch = math.ceil(num_micro_batches / grad_accum_steps)
+    group_sizes = accumulation_groups(num_micro_batches, grad_accum_steps)
 
-    print("Parameter count:", sum(p.numel() for p in model.parameters()))
-    print("Training on device:", device)
-    print("Using amp?", use_amp, amp_dtype)
+    def make_scheduler(total_steps):
+        return torch.optim.lr_scheduler.OneCycleLR(
+            optimizer,
+            max_lr=args.learning_rate,
+            total_steps=total_steps,
+            pct_start=0.1, # Warmup for first 10% of training,
+            anneal_strategy='cos', # cosine decay
+            div_factor=25.0, # initial LR will be max_lr / 25
+            final_div_factor=1000.0, # Final LR will be tiny
+        )
 
     # -------
-    # Resume
+    # Resume / fine-tune
     # -------
-    start_epoch = 0
-    best_val_loss = float("inf")
+    start_epoch, step, best_val_loss = 0, 0, float("inf")
 
     if args.resume:
-        if os.path.isfile(args.resume):
-            print(f"Resuming training from checkpoint: {args.resume}")
-            checkpoint = torch.load(args.resume, map_location=device)
-
-            # Load sates
-            model.load_state_dict(checkpoint['model'])
-            optimizer.load_state_dict(checkpoint['optimizer'])
-
-            # Restore training state
-            start_epoch = checkpoint['epoch'] + 1
-            best_val_loss = checkpoint.get('best_val_loss', float("inf"))
-
-            # Handle scaler state if it does exist
-            if 'scaler' in checkpoint and checkpoint['scaler'] is not None:
-                scaler.load_state_dict(checkpoint['scaler'])
-            print(f"Resumed from Epoch {checkpoint['epoch']} with val loss {best_val_loss:.3f}")
+        ckpt = load_checkpoint(args.resume, map_location="cpu") # load_state_dict copies onto the model/optimizer device
+        model.load_state_dict(ckpt["model"])
+        start_epoch = ckpt["epoch"] + 1
+        step = ckpt.get("step", 0)
+        best_val_loss = ckpt.get("best_val_loss", float("inf"))
+        if ckpt.get("scheduler") is not None:
+            scheduler = make_scheduler(steps_per_epoch * args.epochs)
+            optimizer.load_state_dict(ckpt["optimizer"]) # after the scheduler, which resets the LR when created
+            scheduler.load_state_dict(ckpt["scheduler"])
         else:
-            print(f"Checkpoint not found at {args.resume}, starting from scratch.")
-    elif args.finetune_from:
-        # TODO: add fine tuning logic
-        pass
+            print("Checkpoint has no scheduler state (pre-T3); restarting the LR schedule over the remaining epochs")
+            optimizer.load_state_dict(ckpt["optimizer"])
+            scheduler = make_scheduler(steps_per_epoch * (args.epochs - start_epoch))
+        if ckpt.get("scaler") is not None:
+            scaler.load_state_dict(ckpt["scaler"])
+        if ckpt.get("rng") is not None:
+            set_rng_state(ckpt["rng"])
+        del ckpt
+        print(f"Resumed {args.resume} at epoch {start_epoch}, step {step}, best val {best_val_loss:.4f}")
+    else:
+        if args.finetune_from:
+            model.load_state_dict(load_checkpoint(args.finetune_from, map_location="cpu")["model"])
+            print(f"Fine-tuning from {args.finetune_from}")
+        scheduler = make_scheduler(steps_per_epoch * args.epochs)
+
+    if args.compile:
+        print(f"Compiling model for {device.type}")
+        model = torch.compile(model)
+
+    # -------
+    # run files
+    # -------
+    config = {**vars(args), "run_dir": str(run_dir), "device": str(device), "n_params": n_params,
+              "flops_per_token": flops_tok, "peak_flops": peak, "git_commit": git_commit()}
+    config_path = run_dir / "config.json"
+    if not config_path.exists():
+        config_path.write_text(json.dumps(config, indent=2) + "\n")
+    metrics_path = run_dir / "metrics.jsonl"
+
+    def checkpoint(name, epoch, val_loss):
+        save_checkpoint(run_dir / name, model=model, optimizer=optimizer, scheduler=scheduler, scaler=scaler,
+                        epoch=epoch, step=step, val_loss=val_loss, best_val_loss=best_val_loss, config=config,
+                        rng=rng_state())
+
+    print(f"Training epochs {start_epoch}..{args.epochs - 1}: {steps_per_epoch} steps/epoch, {grad_accum_steps} micro-batches/step")
 
     # --------------------------------
     # training loop and checkpointing
     # --------------------------------
-    V = vocab_size
-    lnV = np.log(V)
-
-    # recalculate steps based on remaining epochs (if it is a resume run)
-    remaining_epochs = args.epochs - start_epoch # start_epoch will be 0 if not a resume
-    num_micro_batches = len(train_dl) # number of batches per epoch
-    grad_accum_steps = max(1, batch_size // micro_batch_size) # handles cases if our batch size is not perfectly divisible with our batch size
-
-    steps_per_epoch = num_micro_batches // grad_accum_steps
-    if num_micro_batches % grad_accum_steps != 0: # adds another step to the epoch to cover for the last batch diff
-        steps_per_epoch += 1
-
-    total_steps = steps_per_epoch * remaining_epochs
-
-    print(f"Training for {remaining_epochs} epochs ({total_steps} steps).")
-    scheduler = torch.optim.lr_scheduler.OneCycleLR(
-        optimizer,
-        max_lr=learning_rate,
-        total_steps=total_steps,
-        pct_start=0.1, # Warmup for first 10% of training,
-        anneal_strategy='cos', # cosine decay
-        div_factor=25.0, # initial LR will be max_lr / 25
-        final_div_factor=1000.0, # Final LR will be tiny
-    )
-
+    val_loss = None
     for epoch in range(start_epoch, args.epochs):
         model.train()
         optimizer.zero_grad(set_to_none=True)
-        train_loss_accum = 0.0
+        loss_sum, grad_norms, tokens = 0.0, [], 0
 
-        for step, (x, y) in enumerate(train_dl):
-            x , y = x.to(device), y.to(device)
+        profiling = args.profile_steps > 0 and epoch == start_epoch
+        prof = torch.profiler.profile(
+            activities=[torch.profiler.ProfilerActivity.CPU] + ([torch.profiler.ProfilerActivity.CUDA] if device.type == "cuda" else []),
+            schedule=torch.profiler.schedule(wait=1, warmup=2, active=args.profile_steps, repeat=1),
+        ) if profiling else nullcontext()
 
-            # Using torch.autocast here with device_Type to avoid backend specific contexts
-            # Forward pass with autocast
-            with torch.amp.autocast('cuda', dtype=amp_dtype, enabled=use_amp):
-                logits, loss = model(x, y)
-                loss = loss / grad_accum_steps # scale loss by accumulation steps so gradients average out correctly
+        t0 = time.perf_counter()
+        with prof:
+            for i, (x, y) in enumerate(train_dl):
+                x, y = x.to(device), y.to(device)
 
-            # Backward pass (accumulate the gradients)
-            if use_amp and amp_dtype == torch.float16:
-                # FP16 path: just scale
-                # optimiser steps will be done at the end
-                scaler.scale(loss).backward()
-            else:
-                # BF16 / no-amp path:
-                loss.backward()
+                with autocast():
+                    _, loss = model(x, y)
+                # scale by the size of this accumulation group so gradients average correctly
+                scaler.scale(loss / group_sizes[i]).backward()
+                loss_sum += loss.item()
+                tokens += x.numel()
 
-            # Accumulate loss
-            train_loss_accum += loss.item() * grad_accum_steps
-
-            # Step optimizer (only even N steps)
-            is_last_step = (step + 1) == len(train_dl)
-            if (step + 1) % grad_accum_steps == 0 or is_last_step:
-                if use_amp and amp_dtype == torch.float16:
+                # Step optimizer at the end of each accumulation group
+                if (i + 1) % grad_accum_steps == 0 or (i + 1) == num_micro_batches:
                     scaler.unscale_(optimizer)
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), 0.5)
+                    grad_norms.append(torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip).item())
                     scaler.step(optimizer)
                     scaler.update()
-                else:
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), 0.5)
-                    optimizer.step()
+                    scheduler.step()
+                    # Resets gradients ONLY after the step, or else we will lose our gradients
+                    optimizer.zero_grad(set_to_none=True)
+                    step += 1
 
-                # step the scheduler
-                scheduler.step()
+                if profiling:
+                    prof.step()
 
-                # Resets gradients ONLY after the step, or else we will lose our gradients
-                optimizer.zero_grad(set_to_none=True)
+        if device.type == "cuda":
+            torch.cuda.synchronize()
+        train_time = time.perf_counter() - t0
+
+        if profiling:
+            (run_dir / "profile.txt").write_text(profile_report(prof, device))
+            print(f"Wrote {run_dir / 'profile.txt'}")
 
         # ----- validate ------
-
-        model.eval()
-        val_loss, total_tokens = 0.0, 0
-        with torch.no_grad():
-            # also using AMP in eval to cut memory/latency
-            with torch.amp.autocast('cuda', dtype=amp_dtype, enabled=use_amp):
-                for x, y in val_dl:
-                    x, y = x.to(device), y.to(device)
-                    _, l = model(x, y) # loss already mean per-token for batch
-                    num_tokens = y.numel()
-                    val_loss += l.item() * num_tokens
-                    total_tokens += num_tokens
-
-        avg_loss = val_loss / total_tokens
-        ppl = np.exp(avg_loss)
-        bpc = avg_loss / np.log(2)
-        improv_ratio = V / ppl
-        delta_nats = lnV - avg_loss
-
-        num_train_steps = len(train_dl)
-        avg_train_loss = train_loss_accum / num_train_steps
-        current_lr = scheduler.get_last_lr()[0]
-
-        # TODO: understand these metrics in depth
+        val_loss = evaluate(model, val_dl, device, autocast)
+        tokens_per_sec = tokens / train_time
+        row = {
+            "epoch": epoch,
+            "step": step,
+            "train_loss": loss_sum / num_micro_batches,
+            "val_loss": val_loss,
+            "val_ppl": math.exp(val_loss),
+            "val_bits_per_token": val_loss / math.log(2),
+            "lr": scheduler.get_last_lr()[0],
+            "grad_norm": sum(grad_norms) / len(grad_norms),
+            "tokens_per_sec": tokens_per_sec,
+            "mfu": mfu(tokens_per_sec, flops_tok, peak),
+            "train_time_s": train_time,
+        }
+        with metrics_path.open("a") as f:
+            f.write(json.dumps(row) + "\n")
         print(
-            f"epoch {epoch} "
-            f"train {avg_train_loss:.4f} "
-            f"val_loss {avg_loss:.4f}  ppl {ppl:.0f}  "
-            f"bpc {bpc:.3f}  Δnats {delta_nats:.3f}  x-better {improv_ratio:.2f}x  (lnV {lnV:.3f})"
-            f"LR {current_lr:.6f}"
+            f"epoch {epoch} step {step} train {row['train_loss']:.4f} val_loss {val_loss:.4f} ppl {row['val_ppl']:.1f} "
+            f"lr {row['lr']:.2e} grad_norm {row['grad_norm']:.3f} tok/s {tokens_per_sec:,.0f}"
+            + (f" mfu {row['mfu']:.1%}" if row["mfu"] is not None else "")
         )
 
         # ---------------
         # checkpointing
         # ---------------
-
-        # best model
-        if avg_loss < best_val_loss:
-            best_val_loss = avg_loss
-            ckpt = {
-                "model": model.state_dict(),
-                "optimizer": optimizer.state_dict(),
-                "scaler": scaler.state_dict() if (use_amp and amp_dtype == torch.float16) else None,
-                "epoch": epoch,
-                "best_val_loss": best_val_loss,
-                "vocab_size": vocab_size,
-                "hyperparams": {
-                    "n_embd": n_embd,
-                    "n_head": n_head,
-                    "n_layer": n_layer,
-                    "block_size": block_size,
-                    "dropout": dropout
-                },
-            }
-            torch.save(ckpt, os.path.join(args.checkpoint_dir, "best.pt"))
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+            checkpoint("best.pt", epoch, val_loss)
             print(f"Saved new best checkpoint (val_loss={best_val_loss:.4f})")
-
-        # periodic checkpoints
         if args.save_every > 0 and (epoch + 1) % args.save_every == 0:
-            torch.save(
-                {
-                    "model": model.state_dict(),
-                    "optimizer": optimizer.state_dict(),
-                    "scaler": scaler.state_dict() if (use_amp and amp_dtype == torch.float16) else None,
-                    "epoch": epoch,
-                    "val_loss": avg_loss,
-                    "vocab_size": vocab_size,
-                    "hyperparams": {
-                        "n_embd": n_embd,
-                        "n_head": n_head,
-                        "n_layer": n_layer,
-                        "block_size": block_size,
-                        "dropout": dropout
-                    },
-                },
-                os.path.join(args.checkpoint_dir, f"epoch_{epoch+1}.pt"),
-            )
-            print(f"Saved checkpoint at epoch {epoch+1}")
+            checkpoint(f"epoch_{epoch + 1}.pt", epoch, val_loss)
 
-    # saving final checkpoint
-    torch.save(
-        {
-            "model": model.state_dict(),
-            "optimizer": optimizer.state_dict(),
-            "scaler": scaler.state_dict() if (use_amp and amp_dtype == torch.float16) else None,
-            "epoch": args.epochs - 1
-        },
-        os.path.join(args.checkpoint_dir, "final.pt"),
-    )
+    checkpoint("final.pt", args.epochs - 1, val_loss)
     print("Training finished")
+    return run_dir
+
+
+def main():
+    train(parse_args())
+
 
 if __name__ == "__main__":
     main()
