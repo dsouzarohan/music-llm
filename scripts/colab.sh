@@ -5,12 +5,13 @@
 #   colab drivemount -s music                 HUMAN step: mount Drive (interactive)
 #   scripts/colab.sh setup                    clone BRANCH (default master), link Drive data, install deps,
 #                                             copy tokenized/ from Drive to local disk
-#   scripts/colab.sh train <config> [flags]   launch train.py detached; log goes to Drive data/logs/
-#   scripts/colab.sh queue <queue file>...    run queue files in order (scripts/queue.sh) detached; same log folder
+#   scripts/colab.sh train <config> [flags]   launch train.py detached (runs and logs on local disk, synced to Drive)
+#   scripts/colab.sh queue <queue file>...    run queue files in order (scripts/queue.sh) detached, same layout
 #   scripts/colab.sh logs [n]                 tail the latest training log
 #   scripts/colab.sh status                   session status and nvidia-smi
 #   scripts/colab.sh fetch <remote> <local>   download a file or folder from the VM (scp -r)
 #   scripts/colab.sh ssh [command]            shell on the VM, or run one command there
+#   scripts/colab.sh pull <date>/<run>        copy a run from Drive to local disk (to resume it there)
 #   scripts/colab.sh stop                     release the VM (billing stops)
 #
 # Env: SESSION (default music), GPU (default A100), BRANCH (default master).
@@ -24,6 +25,9 @@ REPO_URL="https://github.com/dsouzarohan/music-llm.git"
 DRIVE_DATA="/content/drive/MyDrive/Projects/music-llm/data"
 VM_REPO="/content/music-llm"
 LOCAL_DATA="/content/data-local"
+LOCAL_RUNS="/content/runs"
+LOCAL_LOGS="/content/logs"
+SYNC_EVERY=300
 
 SSH_OPTS=(-o "ProxyCommand=colab ssh --proxy-mode -s $SESSION" -o StrictHostKeyChecking=no
   -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ServerAliveInterval=30)
@@ -41,6 +45,15 @@ remote() {
   # remote <timeout_s> <bash command>: runs a shell command on the VM, streams output, propagates failure
   require_session
   ssh "${SSH_OPTS[@]}" -o BatchMode=yes "$SSH_HOST" "timeout $1 bash -lc $(printf %q "$2")"
+}
+
+launch() {
+  # launch <command run in $VM_REPO>: detached, log in $LOCAL_LOGS, runs and logs synced to Drive every SYNC_EVERY s
+  remote 30 "mkdir -p $LOCAL_RUNS $LOCAL_LOGS && cd $VM_REPO && log=$LOCAL_LOGS/train_\$(date +%Y%m%d_%H%M%S).log && \
+    { nohup $1 > \$log 2>&1 < /dev/null & } && pid=\$! && \
+    { nohup scripts/sync-runs.sh \$pid $SYNC_EVERY $LOCAL_RUNS:$DRIVE_DATA/runs $LOCAL_LOGS:$DRIVE_DATA/logs \
+        > $LOCAL_LOGS/sync.log 2>&1 < /dev/null & } && \
+    echo started pid \$pid log \$log, syncing to Drive every ${SYNC_EVERY}s"
 }
 
 cmd="${1:-}"
@@ -68,20 +81,16 @@ case "$cmd" in
     config="${1:?usage: scripts/colab.sh train <config.toml> [train.py flags]}"
     shift
     flags=$(printf ' %q' "$@")
-    # braces keep `&` scoped to nohup; -u unbuffers stdout so the log fills live
-    remote 30 "mkdir -p $VM_REPO/data/logs && cd $VM_REPO && log=data/logs/train_\$(date +%Y%m%d_%H%M%S).log && \
-      { nohup python -u -m src.utils.train --config $config --data_root $LOCAL_DATA --runs_dir data/runs $flags > \$log 2>&1 < /dev/null & } && \
-      echo started pid \$! log $VM_REPO/\$log"
+    # -u unbuffers stdout so the log fills live
+    launch "python -u -m src.utils.train --config $config --data_root $LOCAL_DATA --runs_dir $LOCAL_RUNS $flags"
     ;;
   queue)
     [[ $# -ge 1 ]] || { echo "usage: scripts/colab.sh queue <queue file>..." >&2; exit 2; }
     queue=$(printf ' %q' "$@")
-    remote 30 "mkdir -p $VM_REPO/data/logs && cd $VM_REPO && log=data/logs/train_\$(date +%Y%m%d_%H%M%S).log && \
-      { PYTHON=python DATA_ROOT=$LOCAL_DATA RUNS_DIR=data/runs nohup scripts/queue.sh $queue > \$log 2>&1 < /dev/null & } && \
-      echo started pid \$! log $VM_REPO/\$log"
+    launch "env PYTHON=python DATA_ROOT=$LOCAL_DATA RUNS_DIR=$LOCAL_RUNS scripts/queue.sh$queue"
     ;;
   logs)
-    remote 30 "tail -n ${1:-20} \$(ls -t $VM_REPO/data/logs/train_*.log | head -1)"
+    remote 30 "tail -n ${1:-20} \$(ls -t $LOCAL_LOGS/train_*.log | head -1); tail -n 2 $LOCAL_LOGS/sync.log 2>/dev/null"
     ;;
   status)
     colab status -s "$SESSION"
@@ -95,11 +104,16 @@ case "$cmd" in
     require_session
     ssh "${SSH_OPTS[@]}" "$SSH_HOST" "$@"
     ;;
+  pull)
+    # copy a run from Drive to local disk, e.g. to --resume it there
+    run="${1:?usage: scripts/colab.sh pull <YYYY-MM-DD>/<run>}"
+    remote 600 "mkdir -p $LOCAL_RUNS/\$(dirname $run) && rsync -a --exclude '*.tmp' $DRIVE_DATA/runs/$run/ $LOCAL_RUNS/$run/ && ls -la $LOCAL_RUNS/$run/checkpoints"
+    ;;
   stop)
     colab stop -s "$SESSION"
     ;;
   *)
-    sed -n '2,17p' "$0"
+    sed -n '2,18p' "$0"
     exit 1
     ;;
 esac
