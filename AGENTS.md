@@ -60,7 +60,7 @@ uv run jupyter lab           # playground notebooks (dev group, installed by def
 ## Layout
 
 ```
-src/model/model.py                        MusicTransformer, RelativeHead (+ unused Head)
+src/model/model.py                        MusicTransformer, Attention (Huang or RoPE), block switches
 src/utils/train.py                        training entry point: parse_args() + train(args)
 src/utils/checkpoint.py                   save_checkpoint / load_checkpoint (one schema)
 src/utils/config.py                       TOML run spec -> argparse defaults

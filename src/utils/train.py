@@ -15,8 +15,8 @@ import torch
 from torch.utils.data import DataLoader
 
 from src.model.model import MusicTransformer
-from src.utils.checkpoint import (CHECKPOINT_DIR, load_checkpoint, prune_snapshots, resolve_checkpoint, run_dir_of,
-                                  save_checkpoint, snapshot_name)
+from src.utils.checkpoint import (CHECKPOINT_DIR, load_checkpoint, model_hyperparams, prune_snapshots,
+                                  resolve_checkpoint, run_dir_of, save_checkpoint, snapshot_name)
 from src.utils.config import apply_config_file
 from src.utils.data.guitar_dataset import GuitarDataset
 from src.utils.data.random_guitar_seq_dataset import RandomGuitarSeqDataset
@@ -31,7 +31,14 @@ from src.utils.hyperparameters import (
     DROPOUT,
     VOCAB_SIZE,
     LEARNING_RATE,
-    MICRO_BATCH_SIZE
+    MICRO_BATCH_SIZE,
+    POS,
+    NORM,
+    MLP,
+    MLP_RATIO,
+    QK_NORM,
+    TIE_EMBEDDINGS,
+    WEIGHT_DECAY,
 )
 
 # -------
@@ -100,6 +107,15 @@ def build_parser():
     parser.add_argument("--dropout", type=float, default=DROPOUT, help="Dropout rate")
     parser.add_argument("--vocab_size", type=int, default=VOCAB_SIZE, help="Vocabulary size")
     parser.add_argument("--learning_rate", type=float, default=LEARNING_RATE, help="Peak learning rate")
+    parser.add_argument("--weight_decay", type=float, default=WEIGHT_DECAY, help="AdamW weight decay on Linear weights")
+
+    # Block switches
+    parser.add_argument("--pos", choices=["huang", "rope"], default=POS, help="Position scheme")
+    parser.add_argument("--norm", choices=["layernorm", "rmsnorm"], default=NORM)
+    parser.add_argument("--mlp", choices=["gelu", "swiglu"], default=MLP)
+    parser.add_argument("--mlp_ratio", type=float, default=MLP_RATIO, help="GELU hidden = ratio·C; SwiGLU matches its params")
+    parser.add_argument("--qk_norm", action=argparse.BooleanOptionalAction, default=QK_NORM, help="RMSNorm on q and k per head")
+    parser.add_argument("--tie_embeddings", action=argparse.BooleanOptionalAction, default=TIE_EMBEDDINGS, help="Share token embedding and lm_head weights")
 
     # Training run arguments
     parser.add_argument("--resume", type=str, default=None, help="Run directory (resumes its checkpoints/last.pt) or checkpoint file; restores model, optimizer, scheduler, RNG")
@@ -243,13 +259,13 @@ def train(args):
     # model
     # -------
 
-    model = MusicTransformer(args.vocab_size, args.embedding_dim, args.n_head, args.n_layer, args.block_size, args.dropout).to(device)
+    model = MusicTransformer(args.vocab_size, **model_hyperparams(vars(args))).to(device)
     n_params = sum(p.numel() for p in model.parameters())
-    flops_tok = flops_per_token(n_params, args.n_layer, args.embedding_dim, args.block_size)
+    flops_tok = flops_per_token(model)
     peak = args.peak_flops or device_peak_flops(device)
     print(f"Parameters {n_params:,}, {flops_tok / 1e9:.2f} GFLOP/token, peak {peak or 'unknown'} FLOP/s")
 
-    optimizer = torch.optim.AdamW(model.parameters(), lr=args.learning_rate, betas=(0.9, 0.95))
+    optimizer = torch.optim.AdamW(model.param_groups(args.weight_decay), lr=args.learning_rate, betas=(0.9, 0.95))
 
     num_micro_batches = len(train_dl) # number of batches per epoch
     steps_per_epoch = math.ceil(num_micro_batches / grad_accum_steps)

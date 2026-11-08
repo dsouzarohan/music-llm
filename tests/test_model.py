@@ -1,16 +1,27 @@
 import pytest
 import torch
 
-from src.model.model import MusicTransformer
-from tests.conftest import TINY
+from src.model.model import MusicTransformer, swiglu_hidden
+from src.utils.metrics import flops_per_token
+from tests.conftest import BLOCKS, OLD_BLOCK, TINY
 
 
-def expected_params(V, C, L, H, T):
+def expected_params(V, C, L, H, T, pos="huang", norm="layernorm", mlp="gelu", qk_norm=False,
+                    tie_embeddings=False, mlp_ratio=3):
     """Parameter-count formula from docs/architecture/model-and-training.md."""
     Dh = C // H
-    per_head = 3 * C * Dh + T * Dh
-    per_block = H * per_head + (C * C + C) + (C * 3 * C + 3 * C) + (3 * C * C + C) + 4 * C
-    return V * C + T * C + L * per_block + 2 * C + C * V + V
+    norm_p = 2 * C if norm == "layernorm" else C
+    attn = 3 * C * C + (C * C + C) + (T * C if pos == "huang" else 0) + (2 * Dh if qk_norm else 0)
+    if mlp == "gelu":
+        h = int(mlp_ratio * C)
+        ffn = (C * h + h) + (h * C + C)
+    else:
+        h = swiglu_hidden(C, mlp_ratio)
+        ffn = (C * 2 * h + 2 * h) + (h * C + C)
+    per_block = attn + ffn + 2 * norm_p
+    embeddings = V * C + (T * C if pos == "huang" else 0)
+    lm_head = (0 if tie_embeddings else C * V) + V
+    return embeddings + L * per_block + norm_p + lm_head
 
 
 def n_params(model):
@@ -18,9 +29,10 @@ def n_params(model):
 
 
 def test_param_count_matches_formula(tiny_model):
-    t = TINY
-    assert n_params(tiny_model) == expected_params(
-        t["vocab_size"], t["n_embd"], t["n_layer"], t["n_head"], t["block_size"]
+    m = tiny_model
+    assert n_params(m) == expected_params(
+        m.vocab_size, m.n_embd, m.n_layer, m.n_head, m.block_size,
+        m.pos, m.norm, m.mlp, m.qk_norm, m.tie_embeddings, m.mlp_ratio,
     )
 
 
@@ -28,6 +40,49 @@ def test_param_count_matches_colab_186m():
     with torch.device("meta"):
         model = MusicTransformer(vocab_size=3500, n_embd=768, n_head=12, n_layer=24, block_size=2048)
     assert n_params(model) == 186_426_284
+
+
+def test_swiglu_matches_gelu_param_count_at_186m_shape():
+    with torch.device("meta"):
+        gelu = MusicTransformer(vocab_size=3500, n_embd=768, n_head=12, n_layer=24, block_size=2048)
+        swiglu = MusicTransformer(vocab_size=3500, n_embd=768, n_head=12, n_layer=24, block_size=2048, mlp="swiglu")
+    # only the gate/value biases differ: one extra bias vector of size hidden per layer
+    assert n_params(swiglu) - n_params(gelu) == 24 * (swiglu_hidden(768, 3) * 2 - 3 * 768)
+
+
+def test_checkpoint_has_no_buffers(tiny_model):
+    """#26: the state dict holds parameters only (no causal masks, no RoPE tables)."""
+    assert set(tiny_model.state_dict()) == {n for n, _ in tiny_model.named_parameters(remove_duplicate=False)}
+
+
+def test_tied_embeddings_share_one_tensor():
+    m = MusicTransformer(**TINY, tie_embeddings=True)
+    assert m.last.weight is m.token_embeddings.weight
+
+
+def test_weight_decay_only_on_linear_weights(tiny_model):
+    decay, no_decay = tiny_model.param_groups(0.1)
+    names = {id(p): n for n, p in tiny_model.named_parameters()}
+    decayed = {names[id(p)] for p in decay["params"]}
+    assert len(decay["params"]) + len(no_decay["params"]) == len(list(tiny_model.parameters()))
+    assert decayed and all(n.endswith("weight") for n in decayed)
+    assert not any(k in n for n in decayed for k in ("embeddings", "rel_bias", "ln", "norm"))
+    assert (decay["weight_decay"], no_decay["weight_decay"]) == (0.1, 0.0)
+
+
+def test_flops_per_token_counts_attention_matmuls_not_lookups():
+    C, L, T = TINY["n_embd"], TINY["n_layer"], TINY["block_size"]
+    huang = MusicTransformer(**TINY, **OLD_BLOCK)
+    rope = MusicTransformer(**TINY, **{**OLD_BLOCK, "pos": "rope"})
+    tied = MusicTransformer(**TINY, **{**OLD_BLOCK, "pos": "rope", "tie_embeddings": True})
+    assert flops_per_token(huang) - flops_per_token(rope) == 6 * L * C * T  # the q@E^T matmul
+    assert flops_per_token(tied) == flops_per_token(rope)
+
+
+@pytest.mark.parametrize("bad", [dict(pos="alibi"), dict(norm="batchnorm"), dict(mlp="relu")])
+def test_unknown_switch_values_raise(bad):
+    with pytest.raises(ValueError):
+        MusicTransformer(**TINY, **bad)
 
 
 def test_every_parameter_gets_a_gradient(tiny_model, full_batch):

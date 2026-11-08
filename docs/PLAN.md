@@ -16,7 +16,8 @@ the bottleneck. After this phase:
 `docs/known-issues.md`.
 
 **Baseline to beat:** val **3.498** (ppl 33.1) on the fixed val set, 186M params, 204.8M tokens,
-≈3.7e17 training FLOPs, 22.2k tok/s, MFU 12.8% on an A100 40GB (`docs/journal/2026-11-08.md`).
+≈3.16e17 training FLOPs, 22.2k tok/s, MFU 11.0% on an A100 40GB (`docs/journal/2026-11-08.md`;
+that entry says 3.7e17 and 12.8%, from the FLOPs formula before Decision 10).
 
 **Out of scope for this phase:**
 
@@ -53,6 +54,18 @@ Made while planning (2026-11-08). Revisit here, not silently in code.
 6. **Block choice at ~30M, scale question afterwards.** Comparing a new-block 30M model with the
    old-block 186M baseline changes two things at once. T5 isolates the block, T6 isolates size.
 7. **Context stays 2048, vocab stays 3500.** Only the block changes.
+8. **T3 and T4 go before T2** (2026-11-08, Lightning outage). Their code and CPU tests don't need
+   a cloud GPU. Their GPU acceptance items (T3 profile and tokens/s, T4 sample timing) stay open
+   until T2 lands, then get measured together.
+9. **T5 runs share one shape, not one parameter count** (2026-11-08). At 8L/512/8H the old block
+   is 34.0M params and the full modern block 22.8M: Huang adds 8.4M of `rel_bias` plus a 1.0M
+   position table, and tying removes the 1.8M `lm_head`. All five runs keep the same layers, width
+   and heads, so the weights that model content are the same size; the journal reports total
+   params and FLOPs/token for each run.
+10. **FLOPs/token counts matmuls only** (2026-11-08, T3). `6 × nn.Linear weights + 6·T·C per
+    attention matmul per layer` (2 matmuls, 3 with Huang's `q@Eᵀ`). The old `6N + 18·L·C·T`
+    charged FLOPs to embedding lookups and to `rel_bias`, which the attention term already
+    counted, so it overstated the baseline by 14% (1.798 → 1.545 GFLOP/token).
 
 ---
 
@@ -106,21 +119,23 @@ A chore, done first so every run in this phase uses it.
 
 ## T3 · Batched attention and the modern block
 
-**Status:** todo
+**Status:** in progress (code done; the GPU profile waits for T2)
 
 Rewrite attention, then add the modern pieces behind switches.
 
 - **Attention:** one `qkv` projection, `(B, H, T, D)` tensors, one
   `F.scaled_dot_product_attention(..., is_causal=True)` call. Fixes #23 and #26 (no `tril`
   buffers).
-- **`pos = "huang"`**: the relative bias becomes a `(H, T, T)` additive `attn_mask` built from
-  `rel_bias`, plus the absolute position embedding, as today. Equivalence test against the
+- **`pos = "huang"`**: the relative bias becomes a `(B, H, T, T)` additive `attn_mask` (it
+  depends on q, so it's per batch element) built from `rel_bias` and the causal mask, plus the absolute position embedding, as today. Equivalence test against the
   current `RelativeHead` code with copied weights, then delete `Head`/`RelativeHead`.
 - **`pos = "rope"`**: rotary embeddings on q and k; no absolute position embedding, no
   `rel_bias`. SDPA can use its flash kernel because there's no bias.
 - **`norm = "layernorm" | "rmsnorm"`**, **`qk_norm`**: RMSNorm on q and k per head.
-- **`mlp = "gelu" | "swiglu"`**: SwiGLU hidden size `≈ 8/3·C` rounded, to keep params
-  comparable; also removes the hardcoded `mlp_ratio` (#21 leftover).
+- **`mlp = "gelu" | "swiglu"`**: SwiGLU hidden size `2/3 · mlp_ratio · C` rounded up to 64
+  (`2C` at our ratio 3; the usual `8/3·C` assumes ratio 4), to keep params equal;
+  `mlp_ratio` becomes a hyperparameter (#21 leftover).
+- **FLOPs/token** from the model's matmuls (Decision 10).
 - **`tie_embeddings`**: share the token embedding and `lm_head` weights.
 - **Weight-decay groups (#22):** decay 2-D weights only; no decay on norms, biases, embeddings.
 - Update the parameter-count formula in `docs/architecture/model-and-training.md` and its test
@@ -128,11 +143,15 @@ Rewrite attention, then add the modern pieces behind switches.
 
 **Acceptance:**
 
-- [ ] Batched Huang attention matches the old per-head implementation's logits (copied weights,
+- [x] Batched Huang attention matches the old per-head implementation's logits (copied weights,
       fp32, `atol` ~1e-5).
-- [ ] Existing model tests (causality, all params get grads, overfit, short prompt, prefix
-      logits) pass for every switch combination.
-- [ ] A 186M checkpoint is ≈2.2 GB (no mask buffers).
+- [x] Existing model tests (causality, all params get grads, overfit, short prompt, prefix
+      logits) pass for every switch combination. (Six variants, `tests/conftest.py::BLOCKS`:
+      the T5 ladder plus the modern parts on Huang. Each switch is tested on and off, and each
+      `pos` mode both with and without the rest.)
+- [x] A 186M checkpoint is ≈2.2 GB (no mask buffers): 186.4M fp32 weights (0.75 GB) + AdamW's
+      two moments (1.49 GB) = 2.24 GB; `test_checkpoint_has_no_buffers` checks the state dict
+      holds parameters only.
 - [ ] Eager profile at micro-batch 2 shows attention's share of device time well below 38%;
       tokens/s and MFU recorded for both `pos` modes.
 - [ ] `scripts/verify.sh` is green.
@@ -167,18 +186,25 @@ Rewrite attention, then add the modern pieces behind switches.
   4. + SwiGLU
   5. + tied embeddings (full modern block)
 - Pick the block from val loss, then tokens/s. Flip the defaults in `hyperparameters.py` to it.
+- **Probe (after the runs):** for the RoPE runs, split each head's q and k energy by RoPE
+  frequency band (fast pairs vs slow pairs), per token type (Bar, Position, Pitch, Velocity,
+  Duration, and BPE merges by their first base token). Shows whether heads use fast pairs
+  for local, positional lookups and slow pairs for content matching, and whether that differs
+  by token type. A notebook in `playground/` plus a journal note.
 
 **Acceptance:**
 
 - [ ] All five runs logged in a journal entry with val loss, ppl, tokens/s and MFU.
 - [ ] The chosen block is the default, with the decision and its numbers in the journal.
+- [ ] Frequency-band probe results in the journal.
 
 ## T6 · Small vs big at equal compute
 
 **Status:** todo
 
-- Train the chosen ~30M block on the baseline's compute budget (≈3.7e17 FLOPs by
-  `metrics.flops_per_token`, ≈1.2B tokens, ~24 passes over the corpus).
+- Train the chosen ~30M block on the baseline's compute budget (≈3.16e17 FLOPs by
+  `metrics.flops_per_token`; ≈1.3B tokens for the full modern block at 237 MFLOP/token, ~27
+  passes over the corpus).
 - Compare with 3.498. Watch the train/val gap: repeating the data ~24× may overfit, which is
   itself the answer to "is data the bottleneck".
 - Sample with `sample.py` (KV cache) and record grammar error rates.

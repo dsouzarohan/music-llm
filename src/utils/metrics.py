@@ -1,6 +1,7 @@
 """Throughput and model FLOPs utilisation (MFU)."""
 
 import torch
+from torch import nn
 
 # dense bf16/fp16 tensor-core peak, FLOP/s
 PEAK_FLOPS = {
@@ -11,13 +12,16 @@ PEAK_FLOPS = {
 }
 
 
-def flops_per_token(n_params, n_layer, n_embd, block_size):
-    """Training FLOPs per token: 6N for the weights plus the attention score matmuls.
+def flops_per_token(model):
+    """Training FLOPs per token of an (uncompiled) MusicTransformer at full context.
 
-    Each layer does three (T x C)-sized matmuls per token in forward (q@kT, q@ET, attn@v),
-    2 FLOPs per multiply-add, and backward costs twice forward: 3 * 3 * 2 * T * C.
+    6 FLOPs per nn.Linear weight (2 forward, 4 backward; a tied lm_head counts once). Embedding
+    lookups, rel_bias, norms and biases are not counted. Attention adds, per layer, 6·T·C for each
+    (T x C)-sized matmul per token: q@kT and attn@v, plus q@ET for pos="huang".
     """
-    return 6 * n_params + 18 * n_layer * n_embd * block_size
+    matmul_params = sum({id(m.weight): m.weight.numel() for m in model.modules() if isinstance(m, nn.Linear)}.values())
+    attn_matmuls = 3 if model.pos == "huang" else 2
+    return 6 * matmul_params + 6 * attn_matmuls * model.n_layer * model.n_embd * model.block_size
 
 
 def device_peak_flops(device):

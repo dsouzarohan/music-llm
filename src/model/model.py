@@ -1,200 +1,179 @@
+import math
+
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
-import math
+
+POS = ("huang", "rope")
+NORMS = ("layernorm", "rmsnorm")
+MLPS = ("gelu", "swiglu")
 
 
-class Head(nn.Module):
-    def __init__(self, head_size, n_embd, block_size, dropout):
+def make_norm(kind, dim):
+    return nn.LayerNorm(dim) if kind == "layernorm" else nn.RMSNorm(dim, eps=1e-5)
+
+
+def rope_tables(block_size, head_size, base=10000.0):
+    """cos and sin of position × frequency, each (block_size, head_size // 2)."""
+    inv_freq = base ** (-torch.arange(0, head_size, 2, dtype=torch.float32) / head_size)
+    angles = torch.outer(torch.arange(block_size, dtype=torch.float32), inv_freq)
+    return angles.cos(), angles.sin()
+
+
+def apply_rope(x, cos, sin):
+    """Rotates channel pairs (i, i + Dh/2) of x (..., T, Dh) by the angles in cos/sin (T, Dh/2)."""
+    x1, x2 = x.chunk(2, dim=-1)
+    cos, sin = cos.to(x.dtype), sin.to(x.dtype)
+    return torch.cat([x1 * cos - x2 * sin, x1 * sin + x2 * cos], dim=-1)
+
+
+def swiglu_hidden(n_embd, mlp_ratio):
+    """SwiGLU hidden size with the same parameter count as a GELU MLP of `mlp_ratio`, rounded up to 64."""
+    return 64 * math.ceil(2 * mlp_ratio * n_embd / 3 / 64)
+
+
+class Attention(nn.Module):
+    """Causal multi-head self-attention, all heads in one F.scaled_dot_product_attention call.
+
+    pos="huang": Music Transformer relative attention. The skewed q·E term is passed to SDPA as an
+    additive mask together with the causal mask. pos="rope": rotary embeddings on q and k, plain causal SDPA.
+    """
+
+    def __init__(self, n_embd, n_head, block_size, dropout, pos="huang", qk_norm=False):
         super().__init__()
-        self.head_size = head_size
-
-        self.query = nn.Linear(n_embd, head_size, bias=False)
-        self.key = nn.Linear(n_embd, head_size, bias=False)
-        self.value = nn.Linear(n_embd, head_size, bias=False)
-
-        # self.register_buffer("tril", torch.tril(torch.ones(block_size, block_size)))
-        self.dropout_p = dropout
-        self.block_size = block_size
-
-    def forward(self, x):
-        # x: [B, T, C], project to head_dim
-        B, T, C = x.shape
-        q = self.query(x)# [B, T, Dh]
-        k = self.key(x)# [B, T, Dh]
-        v = self.value(x)# [B, T, Dh]
-
-        # Writing out a hand rolled QKV attention to PyTorch's inbuilt Scaled Dot-Product Attention (SDPA) unlocks FlashAttention
-        # Manually implementing the softmax(QK^T)V is a great way to learn attention, but can become a memory bottleneck
-
-        # wei = q @ k.transpose(-2, -1) * (self.head_size ** -0.5)  # divide by root of dk as per AIAYN
-        # # wei here is the attention scores matrix, that ends up being a (T, T) matrix
-        # # this is why attention computation grows quadratically with context window
-        # # O(T^2)
-        # wei = wei.masked_fill(self.tril[:T, :T] == 0, float("-inf"))
-        # wei = F.softmax(wei, dim=-1)
-        # wei = self.dropout(wei)
-        # out = wei @ v
-
-        # we will use torch's SDPA here
-        out = F.scaled_dot_product_attention(
-            q, k, v,
-            attn_mask=None,
-            dropout_p=self.dropout_p if self.training else 0.0,
-            is_causal=True # setting this to true ensures transformers don't peek into the future, only depend on past tokens
-        )
-        return out # returns a single attention head output [B, T, Dh]
-
-class RelativeHead(nn.Module):
-    def __init__(self, head_size, n_embd, block_size, dropout):
-        super().__init__()
-
-        self.block_size = block_size
-        self.head_size = head_size
-        self.n_embd = n_embd
+        assert n_embd % n_head == 0, f"n_embd ({n_embd}) must be divisible by n_head ({n_head})"
+        if pos not in POS:
+            raise ValueError(f"pos must be one of {POS}, got {pos!r}")
+        self.n_head = n_head
+        self.head_size = n_embd // n_head
+        self.pos = pos
         self.dropout_p = dropout
 
-        self.query = nn.Linear(n_embd, head_size, bias=False) # (C, Dh)
-        self.key = nn.Linear(n_embd, head_size, bias=False) # (C, Dh)
-        self.value = nn.Linear(n_embd, head_size, bias=False)
-
-        # one learned vector per relative distance; row block_size-1 is distance 0, row 0 is distance -(block_size-1)
-        self.rel_bias = nn.Embedding(block_size, head_size) # (block_size, dH)
-        self.dropout = nn.Dropout(self.dropout_p)
-
-        self.register_buffer("tril", torch.tril(torch.ones(block_size, block_size)))
-
-    def forward(self, x):
-        B, T, C = x.shape
-        # (B, T, C) @ (C, Dh) = (B, T, Dh)
-        q = self.query(x) # (B, T, Dh)
-        k = self.key(x)   # (B, T, Dh)
-        v = self.value(x) # (B, T, Dh)
-
-        # Compute relative content scores (Q @ E)
-        # In this matrix, columns represent "Relative Distances", not absolute keys:
-        # the last T rows cover distances -(T-1)..0, which is all a length-T sequence uses
-        E = self.rel_bias.weight[-T:] # (T, Dh)
-        s_rel = q @ E.transpose(-2, -1) # (B, T, Dh) @ (Dh, T) = (B, T, T)
-
-        # Skewing (Pad -> Resize -> Slice)
-        # pad 1 column to the left
-        s_rel = F.pad(s_rel, (1,0)) # (B, T, T) -> (B, T, T+1)
-
-        # reshape to shift rows
-        s_rel = s_rel.view(B, T+1, T)
-
-        # slice to remove the "overflow" row and align diagonals
-        # we drop the first row here (index 0)
-        s_rel = s_rel[:, 1:, :] # (B, T+1, T) -> (B, T, T)
-
-        # standard attention, but with a bias
-        scores = q @ k.transpose(-2, -1) # (B, T, Dh) @ (B, Dh, T) = (B,T,T)
-
-        # add relative bias to the scores
-        scores = scores + s_rel # (B, T, T) + (B, T, T) -> (B, T, T)
-
-        # scales after bias is applied to ensure both get scaled now
-        scores = scores * (self.head_size ** -0.5)
-
-        # causal mask
-        scores = scores.masked_fill(self.tril[:T, :T] == 0, float("-inf"))
-
-        # softmax -> attention weights
-        attn = F.softmax(scores, dim=-1)
-        attn = self.dropout(attn)
-
-        # weighted sum of values
-        out = attn @ v # (B, T, T) @ (B, T, Dh) = (B, T, Dh)
-        return out
-
-
-class MultiHeadAttention(nn.Module):
-    def __init__(self, num_heads, n_embd, dropout, block_size):
-        super().__init__()
-        assert n_embd % num_heads == 0, f"n_embd ({n_embd}) must be divisible by n_head ({num_heads})"
-        self.num_heads = num_heads
-        self.head_size = n_embd // num_heads # try to keep head_size/head_dim = 64/96/128
-
-        self.heads = nn.ModuleList([
-            RelativeHead(self.head_size, n_embd, block_size, dropout) for _ in range(self.num_heads)
-        ])
+        self.qkv = nn.Linear(n_embd, 3 * n_embd, bias=False)  # rows: [q heads | k heads | v heads]
         self.proj = nn.Linear(n_embd, n_embd)
-        self.dropout = nn.Dropout(dropout)
+        self.resid_dropout = nn.Dropout(dropout)
+        self.q_norm = nn.RMSNorm(self.head_size, eps=1e-5) if qk_norm else nn.Identity()
+        self.k_norm = nn.RMSNorm(self.head_size, eps=1e-5) if qk_norm else nn.Identity()
+
+        if pos == "huang":
+            # per head, one vector per relative distance; row block_size-1 is distance 0
+            self.rel_bias = nn.Parameter(torch.randn(n_head, block_size, self.head_size) * 0.02)
+        else:
+            cos, sin = rope_tables(block_size, self.head_size)
+            self.register_buffer("rope_cos", cos, persistent=False)
+            self.register_buffer("rope_sin", sin, persistent=False)
+
+    def huang_mask(self, q):
+        """(B, H, T, T) additive mask: the skewed q·E scores scaled by 1/sqrt(Dh), -inf above the diagonal."""
+        B, H, T, Dh = q.shape
+        E = self.rel_bias[:, -T:, :]  # (H, T, Dh): distances -(T-1)..0
+        s_rel = q @ E.transpose(-2, -1)  # (B, H, T, T), columns are distances
+        s_rel = F.pad(s_rel, (1, 0)).view(B, H, T + 1, T)[:, :, 1:, :]  # skew: columns become key positions
+        causal = torch.ones(T, T, dtype=torch.bool, device=q.device).tril()
+        return (s_rel * Dh ** -0.5).masked_fill(~causal, float("-inf"))
 
     def forward(self, x):
-        out = torch.cat([h(x) for h in self.heads], dim=-1)
-        out = self.proj(out)
-        out = self.dropout(out)  # Regularization
-        return out
+        B, T, C = x.shape
+        q, k, v = self.qkv(x).view(B, T, 3, self.n_head, self.head_size).permute(2, 0, 3, 1, 4)  # each (B, H, T, Dh)
+        q, k = self.q_norm(q), self.k_norm(k)
+        dropout_p = self.dropout_p if self.training else 0.0
+
+        if self.pos == "rope":
+            cos, sin = self.rope_cos[:T], self.rope_sin[:T]
+            q, k = apply_rope(q, cos, sin), apply_rope(k, cos, sin)
+            out = F.scaled_dot_product_attention(q, k, v, dropout_p=dropout_p, is_causal=True)
+        else:
+            out = F.scaled_dot_product_attention(q, k, v, attn_mask=self.huang_mask(q), dropout_p=dropout_p)
+
+        out = out.transpose(1, 2).reshape(B, T, C)  # concat heads
+        return self.resid_dropout(self.proj(out))
 
 
 class FeedForward(nn.Module):
-    def __init__(self, n_embd, dropout):
+    """GELU MLP (hidden mlp_ratio·C) or SwiGLU MLP (hidden swiglu_hidden(C, mlp_ratio), same parameter count)."""
+
+    def __init__(self, n_embd, dropout, mlp="gelu", mlp_ratio=3):
         super().__init__()
-        self.mlp_ratio = 3 # known as the MLP ratio, how much we expand the dimensions in the MLP before bring it back down
-        self.mlp = nn.Sequential(
-            nn.Linear(n_embd, n_embd * self.mlp_ratio),
-            nn.GELU(),
-            nn.Linear(n_embd * self.mlp_ratio, n_embd),
-            nn.Dropout(dropout)
-        )
+        if mlp not in MLPS:
+            raise ValueError(f"mlp must be one of {MLPS}, got {mlp!r}")
+        self.swiglu = mlp == "swiglu"
+        hidden = swiglu_hidden(n_embd, mlp_ratio) if self.swiglu else int(mlp_ratio * n_embd)
+        self.up = nn.Linear(n_embd, 2 * hidden if self.swiglu else hidden)  # SwiGLU: [gate | value]
+        self.down = nn.Linear(hidden, n_embd)
+        self.dropout = nn.Dropout(dropout)
 
     def forward(self, x):
-        return self.mlp(x)
+        h = self.up(x)
+        if self.swiglu:
+            gate, value = h.chunk(2, dim=-1)
+            h = F.silu(gate) * value
+        else:
+            h = F.gelu(h)
+        return self.dropout(self.down(h))
 
 
 class Block(nn.Module):
-    def __init__(self, n_embd, n_head, dropout, block_size):
+    def __init__(self, n_embd, n_head, dropout, block_size, pos="huang", norm="layernorm", mlp="gelu",
+                 qk_norm=False, mlp_ratio=3):
         super().__init__()
-        self.mmha = MultiHeadAttention(n_head, n_embd, dropout, block_size)
-        self.ffwd = FeedForward(n_embd, dropout)
+        self.attn = Attention(n_embd, n_head, block_size, dropout, pos, qk_norm)
+        self.ffwd = FeedForward(n_embd, dropout, mlp, mlp_ratio)
+        self.ln1 = make_norm(norm, n_embd)
+        self.ln2 = make_norm(norm, n_embd)
 
-        self.ln1 = nn.LayerNorm(n_embd)
-        self.ln2 = nn.LayerNorm(n_embd)
-
-    def forward(self, x):# recommended
+    def forward(self, x):
         # record_function labels show up in torch.profiler output (train.py --profile_steps)
         with torch.profiler.record_function("attention"):
-            x = x + self.mmha(self.ln1(x))
+            x = x + self.attn(self.ln1(x))
         with torch.profiler.record_function("mlp"):
             x = x + self.ffwd(self.ln2(x))
         return x
 
 
 class MusicTransformer(nn.Module):
-    def __init__(self, vocab_size, n_embd=128, n_head=4, n_layer=4, block_size=128, dropout=0.2):
+    """Pre-norm decoder-only transformer. The block's parts are switches:
+
+    - pos: "huang" (relative attention + absolute position embedding) or "rope" (rotary, no position embedding)
+    - norm: "layernorm" or "rmsnorm" (block and final norms)
+    - mlp: "gelu" or "swiglu"; mlp_ratio sets the GELU hidden size, SwiGLU matches its parameter count
+    - qk_norm: RMSNorm on each head's q and k
+    - tie_embeddings: lm_head shares the token embedding weight
+    """
+
+    def __init__(self, vocab_size, n_embd=128, n_head=4, n_layer=4, block_size=128, dropout=0.2,
+                 pos="huang", norm="layernorm", mlp="gelu", qk_norm=False, tie_embeddings=False, mlp_ratio=3):
         super().__init__()
+        if norm not in NORMS:
+            raise ValueError(f"norm must be one of {NORMS}, got {norm!r}")
         self.vocab_size = vocab_size
         self.n_embd = n_embd
         self.n_head = n_head
         self.n_layer = n_layer
         self.block_size = block_size
         self.dropout = dropout
+        self.pos = pos
+        self.norm = norm
+        self.mlp = mlp
+        self.qk_norm = qk_norm
+        self.tie_embeddings = tie_embeddings
+        self.mlp_ratio = mlp_ratio
 
-        self.token_embeddings = nn.Embedding(self.vocab_size, self.n_embd)
-        self.position_embeddings = nn.Embedding(self.block_size, self.n_embd)
+        self.token_embeddings = nn.Embedding(vocab_size, n_embd)
+        self.position_embeddings = nn.Embedding(block_size, n_embd) if pos == "huang" else None
+        self.blocks = nn.Sequential(*[
+            Block(n_embd, n_head, dropout, block_size, pos, norm, mlp, qk_norm, mlp_ratio) for _ in range(n_layer)
+        ])
+        self.ln_f = make_norm(norm, n_embd)
+        self.last = nn.Linear(n_embd, vocab_size)
 
-        self.blocks = nn.Sequential(
-            *[Block(self.n_embd, self.n_head, self.dropout, self.block_size) for _ in range(self.n_layer)])
-        self.ln_f = nn.LayerNorm(self.n_embd)
-        self.last = nn.Linear(self.n_embd, self.vocab_size)
-
-        # Apply Base Init to everything
         self.apply(self._init_weights)
-
-        # Apply Special Scaled Init to Residual Projections
-        print("Applying GPT-2 Scaled Init to:")
+        # GPT-2 scaled init for the residual output projections
+        std_scaled = 0.02 / math.sqrt(2 * n_layer)
         for name, param in self.named_parameters():
-            # Catch Attention Projection (usually named 'proj.weight')
-            # Catch FeedForward Output (usually named 'mlp.2.weight' in your Sequential)
-            if name.endswith("proj.weight") or "mlp.2.weight" in name:
-                
-                # Calculate the scale: 1 / sqrt(2 * layers)
-                std_scaled = 0.02 / math.sqrt(2 * self.n_layer)
-                
+            if name.endswith(("attn.proj.weight", "ffwd.down.weight")):
                 torch.nn.init.normal_(param, mean=0.0, std=std_scaled)
-                print(f" - {name} (std={std_scaled:.6f})")
+        if tie_embeddings:
+            self.last.weight = self.token_embeddings.weight
 
     def _init_weights(self, module):
         if isinstance(module, nn.Linear):
@@ -204,15 +183,20 @@ class MusicTransformer(nn.Module):
         elif isinstance(module, nn.Embedding):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
+    def param_groups(self, weight_decay):
+        """AdamW groups: weight decay on nn.Linear weights only; none on embeddings (incl. a tied lm_head),
+        rel_bias, norms and biases."""
+        embedding_ids = {id(m.weight) for m in self.modules() if isinstance(m, nn.Embedding)}
+        linear_ids = {id(m.weight) for m in self.modules() if isinstance(m, nn.Linear)} - embedding_ids
+        decay = [p for p in self.parameters() if id(p) in linear_ids]
+        no_decay = [p for p in self.parameters() if id(p) not in linear_ids]
+        return [{"params": decay, "weight_decay": weight_decay}, {"params": no_decay, "weight_decay": 0.0}]
+
     def forward(self, idx, targets=None):
-
         B, T = idx.shape
-
-        tok_emb = self.token_embeddings(idx)
-        pos = torch.arange(T, device=idx.device, dtype=torch.long) # ensure positional embeddings are also on the same device
-        pos_emb = self.position_embeddings(pos)[None, :, :]
-
-        x = (tok_emb + pos_emb)  # add the embeddings to form a new positional aware embedding
+        x = self.token_embeddings(idx)
+        if self.position_embeddings is not None:
+            x = x + self.position_embeddings(torch.arange(T, device=idx.device))[None, :, :]
 
         x = self.blocks(x)
         x = self.ln_f(x)
@@ -221,10 +205,7 @@ class MusicTransformer(nn.Module):
         if targets is None:
             loss = None
         else:
-            B, T, C = logits.shape
-            logits = logits.view(B * T, C)  # perform reshape for cross entropy
-            targets = targets.view(B * T)
-            loss = F.cross_entropy(logits, targets)
+            loss = F.cross_entropy(logits.view(B * T, -1), targets.view(B * T))
 
         return logits, loss
 

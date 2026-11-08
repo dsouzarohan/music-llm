@@ -7,3 +7,11 @@ N_LAYER = 8
 N_HEAD = 4
 DROPOUT = 0.2
 LEARNING_RATE = 3e-4
+# block switches (see MusicTransformer)
+POS = "huang"
+NORM = "layernorm"
+MLP = "gelu"
+MLP_RATIO = 3
+QK_NORM = False
+TIE_EMBEDDINGS = False
+WEIGHT_DECAY = 0.01

@@ -113,4 +113,10 @@ def model_hyperparams(config):
         "n_layer": config["n_layer"],
         "block_size": config["block_size"],
         "dropout": config["dropout"],
+        "pos": config["pos"],
+        "norm": config["norm"],
+        "mlp": config["mlp"],
+        "qk_norm": config["qk_norm"],
+        "tie_embeddings": config["tie_embeddings"],
+        "mlp_ratio": config["mlp_ratio"],
     }

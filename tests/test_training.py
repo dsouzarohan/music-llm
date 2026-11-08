@@ -10,7 +10,7 @@ from src.model.model import MusicTransformer
 from src.utils import checkpoint as ckpt_mod
 from src.utils.checkpoint import load_checkpoint, save_checkpoint
 from src.utils.train import accumulation_groups, parse_args, resolve_run_dir, train
-from tests.conftest import TINY
+from tests.conftest import TINY, tiny_config
 from tests.synthetic import write_corpus
 
 REPO = Path(__file__).resolve().parent.parent
@@ -112,8 +112,7 @@ def test_run_dir_layout_by_date_and_resume_reuses_it(tmp_path):
 def tiny_checkpoint(path, epoch):
     model = MusicTransformer(**TINY)
     optimizer = torch.optim.AdamW(model.parameters())
-    config = {"vocab_size": TINY["vocab_size"], "embedding_dim": TINY["n_embd"], "n_head": TINY["n_head"],
-              "n_layer": TINY["n_layer"], "block_size": TINY["block_size"], "dropout": TINY["dropout"]}
+    config = tiny_config()
     save_checkpoint(path, model=model, optimizer=optimizer,
                     scheduler=torch.optim.lr_scheduler.OneCycleLR(optimizer, max_lr=1e-3, total_steps=10),
                     scaler=torch.amp.GradScaler("cpu", enabled=False), epoch=epoch, step=0, val_loss=1.0,
@@ -147,8 +146,7 @@ def test_compiled_model_checkpoint_loads_into_plain_model(tmp_path):
     assert next(iter(compiled.state_dict())).startswith("_orig_mod.")
     optimizer = torch.optim.AdamW(model.parameters())
     scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, max_lr=1e-3, total_steps=10)
-    config = {"vocab_size": TINY["vocab_size"], "embedding_dim": TINY["n_embd"], "n_head": TINY["n_head"],
-              "n_layer": TINY["n_layer"], "block_size": TINY["block_size"], "dropout": TINY["dropout"]}
+    config = tiny_config()
     save_checkpoint(tmp_path / "c.pt", model=compiled, optimizer=optimizer, scheduler=scheduler,
                     scaler=torch.amp.GradScaler("cpu", enabled=False), epoch=0, step=0, val_loss=1.0,
                     best_val_loss=1.0, config=config)
@@ -175,3 +173,13 @@ def test_rng_state_restore_moves_tensors_to_cpu():
     on_device.cpu.return_value = state["torch"]
     set_rng_state({**state, "torch": on_device})
     assert torch.equal(torch.rand(3), expected)
+
+
+def test_modern_block_trains_and_reloads_from_checkpoint(corpus, tmp_path):
+    run_dir = run(corpus, tmp_path / "r", "--pos", "rope", "--norm", "rmsnorm", "--mlp", "swiglu",
+                  "--qk_norm", "--tie_embeddings")
+    state = load_checkpoint(run_dir / "checkpoints" / "best.pt")
+    assert state["hyperparams"]["pos"] == "rope" and state["hyperparams"]["tie_embeddings"] is True
+    model = MusicTransformer(vocab_size=state["vocab_size"], **state["hyperparams"])
+    model.load_state_dict(state["model"])
+    assert model.last.weight is model.token_embeddings.weight
