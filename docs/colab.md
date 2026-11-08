@@ -28,7 +28,7 @@ BRANCH=master scripts/colab.sh setup                  # 3. clone, link Drive dat
 scripts/colab.sh train configs/colab-186m-jan2026.toml  # 4. launch detached
 scripts/colab.sh logs 20                              # 5. poll
 scripts/colab.sh status                               #    GPU utilisation, is training alive
-scripts/colab.sh fetch /content/music-llm/data/runs/<date>/<run> data/runs/<date>/   # scp -r
+scripts/colab.sh fetch /content/runs/<date>/<run> data/runs/<date>/   # scp -r
 scripts/colab.sh stop                                 # 6. release the VM; billing stops
 ```
 
@@ -41,12 +41,17 @@ What each step does:
   then copies `tokenized/` from Drive to `/content/data-local` (62 s on 2026-11-07, 321 s on
   2026-11-08: Drive's speed varies).
 - **train** runs `python -u -m src.utils.train --config <config> --data_root /content/data-local
-  --runs_dir data/runs [flags]` under `nohup`, logging to `data/logs/train_<timestamp>.log`. It
-  reads tokens from local disk and writes everything else to Drive: the log and the run directory
-  (`data/runs/<YYYY-MM-DD>/<HHMM>-<name>/` with `metrics.jsonl` and `checkpoints/`) survive a VM drop. To continue after a drop: `scripts/colab.sh train <config> --resume data/runs/<date>/<run>` (resumes from `checkpoints/last.pt`).
-- **queue** runs a queue file with `scripts/queue.sh` under `nohup`, logging to the same
-  `data/logs/train_<timestamp>.log`. Each line of a queue file is a `python -m` command (train or
-  sample) that may use `$DATA_ROOT` (the staged corpus) and `$RUNS_DIR` (`data/runs` on Drive).
+  --runs_dir /content/runs [flags]` under `nohup`. Runs and the log (`/content/logs/train_<timestamp>.log`)
+  live on the VM's local disk; `scripts/sync-runs.sh` copies `/content/runs` and `/content/logs` to
+  Drive's `data/runs` and `data/logs` every 5 minutes while the job runs, and once more at the end
+  (`*.tmp` files skipped). If the Drive mount drops, training continues and the copy retries; if
+  the VM dies, Drive has everything up to the last copy.
+- **To continue after a dropped VM:** on a new session, `scripts/colab.sh pull <YYYY-MM-DD>/<run>`
+  copies the run from Drive to local disk, then train or queue it with `--resume
+  /content/runs/<YYYY-MM-DD>/<run>` (resumes from `checkpoints/last.pt`).
+- **queue** runs queue files with `scripts/queue.sh`, launched and synced the same way. Each line
+  of a queue file is a `python -m` command (train or sample) that may use `$DATA_ROOT` (the staged
+  corpus) and `$RUNS_DIR` (`/content/runs`).
   Lines run one after another and a failed line doesn't stop the rest. Queue files live in
   `configs/queues/`, e.g. `scripts/colab.sh queue configs/queues/t5-ablations.txt`.
 - Extra flags pass through, e.g. `scripts/colab.sh train configs/colab-186m-jan2026.toml --epochs 2 --profile_steps 10 --no-compile`.
@@ -57,6 +62,9 @@ What each step does:
   120 s timeout without the command reaching the VM, once raising `Connection was lost` and then
   never exiting. `colab console` kept working, so the kernel channel was the problem. Fixed by
   moving `colab.sh` to SSH.
+- **The Drive mount can vanish while the VM keeps running** (2026-11-08, 13:34): `os.replace` of
+  `best.pt.tmp` failed with `FileNotFoundError` and every later queue line failed at `mkdir`, because
+  `data` pointed at a mount that was gone. Hence training on local disk with a periodic sync.
 - **`colab ssh` creates a runtime when the session is missing.** After the A100 was released, a
   status check over SSH silently started a CPU runtime under the same name. `colab.sh` now checks
   `colab sessions` before every SSH/scp call and stops if the session is gone.
@@ -78,7 +86,7 @@ What each step does:
 - **Colab may terminate a session whose notebook looks idle**, even while a detached process
   trains on the GPU. The first baseline attempt died after ~80 min with no browser attached.
   Keep the session open in a browser tab (`colab url -s music --open`) during long runs.
-- **Drive uploads asynchronously.** When that VM died, `metrics.jsonl` (small appends) had
+- **Drive uploads asynchronously** (before the local-disk layout). When that VM died, `metrics.jsonl` (small appends) had
   synced through epoch 14, but the ~2 GB `best.pt` writes from epochs 10–14 never finished
   uploading, so Drive's `best.pt` was from epoch 9. A file existing on Drive doesn't mean its
   latest write did. Resume from the newest checkpoint whose `epoch` matches what you expect.

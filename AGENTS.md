@@ -79,7 +79,8 @@ scripts/setup.sh                          uv sync --locked
 scripts/verify.sh                         the gate: pytest, including an end-to-end smoke train
 scripts/train.sh                          train from a config: scripts/train.sh <config.toml> [flags]
 scripts/smoke-train.sh                    configs/smoke.toml on a synthetic corpus
-scripts/colab.sh                          Colab session over SSH: new/setup/train/queue/logs/status/fetch/ssh/stop
+scripts/colab.sh                          Colab session over SSH: new/setup/train/queue/logs/status/fetch/pull/ssh/stop
+scripts/sync-runs.sh                      copy run and log folders to Drive every N s while a job runs
 scripts/queue.sh                          run a queue file (configs/queues/*.txt): python -m commands in order
 .github/workflows/verify.yml              CI: setup.sh + verify.sh on ubuntu
 scripts/stats.sh                          grep/awk snippets for the extraction log (legacy, to be replaced; leave as is)
