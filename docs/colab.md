@@ -38,6 +38,11 @@ What each step does:
   --runs_dir data/runs [flags]` under `nohup`, logging to `data/logs/train_<timestamp>.log`. It
   reads tokens from local disk and writes everything else to Drive: the log and the run directory
   (`data/runs/<YYYY-MM-DD>/<HHMM>-<name>/` with `metrics.jsonl` and `checkpoints/`) survive a VM drop. To continue after a drop: `scripts/colab.sh train <config> --resume data/runs/<date>/<run>` (resumes from `checkpoints/last.pt`).
+- **queue** runs a queue file with `scripts/queue.sh` under `nohup`, logging to the same
+  `data/logs/train_<timestamp>.log`. Each line of a queue file is a `python -m` command (train or
+  sample) that may use `$DATA_ROOT` (the staged corpus) and `$RUNS_DIR` (`data/runs` on Drive).
+  Lines run one after another and a failed line doesn't stop the rest. Queue files live in
+  `configs/queues/`, e.g. `scripts/colab.sh queue configs/queues/t5-ablations.txt`.
 - Extra flags pass through, e.g. `scripts/colab.sh train configs/colab-186m-jan2026.toml --epochs 2 --profile_steps 10 --no-compile`.
 
 ## Gotchas (found in the first run)

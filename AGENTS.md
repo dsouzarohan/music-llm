@@ -68,7 +68,7 @@ src/utils/checkpoint.py                   save_checkpoint / load_checkpoint (one
 src/utils/config.py                       TOML run spec -> argparse defaults
 src/utils/metrics.py                      FLOPs/token, GPU peak FLOPs, MFU
 src/utils/hyperparameters.py              default hparams (CLI defaults for train.py)
-configs/*.toml                            run specs (smoke, colab-186m-jan2026)
+configs/*.toml                            run specs (smoke, colab-186m-jan2026, ablation-30m-*)
 src/utils/midi_extractor.py               Lakh MIDI -> per-guitar-track .mid (music21)
 src/utils/tokenizer.py                    split -> augment -> train BPE -> tokenize to JSON
 src/utils/data/random_guitar_seq_dataset.py   default dataset: random windows
@@ -79,7 +79,8 @@ scripts/setup.sh                          uv sync --locked
 scripts/verify.sh                         the gate: pytest, including an end-to-end smoke train
 scripts/train.sh                          train from a config: scripts/train.sh <config.toml> [flags]
 scripts/smoke-train.sh                    configs/smoke.toml on a synthetic corpus
-scripts/colab.sh                          Colab session: new/setup/train/logs/status/fetch/stop
+scripts/colab.sh                          Colab session: new/setup/train/queue/logs/status/fetch/stop
+scripts/queue.sh                          run a queue file (configs/queues/*.txt): python -m commands in order
 .github/workflows/verify.yml              CI: setup.sh + verify.sh on ubuntu
 scripts/stats.sh                          grep/awk snippets for the extraction log (legacy, to be replaced; leave as is)
 docs/                                     plan, roadmap, architecture, journal; see docs/README.md

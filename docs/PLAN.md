@@ -66,6 +66,10 @@ Made while planning (2026-11-08). Revisit here, not silently in code.
     attention matmul per layer` (2 matmuls, 3 with Huang's `q@Eᵀ`). The old `6N + 18·L·C·T`
     charged FLOPs to embedding lookups and to `rel_bias`, which the attention term already
     counted, so it overstated the baseline by 14% (1.798 → 1.545 GFLOP/token).
+11. **GPU work runs on Colab while Lightning is down** (2026-11-08). The T3/T4 measurements and
+    the T5/T6 runs use `scripts/colab.sh` (A100 40GB), with `scripts/queue.sh` running queue files
+    from `configs/queues/` unattended. T2 stays open for when Lightning is back; nothing else
+    depends on it.
 
 ---
 
@@ -181,8 +185,10 @@ Rewrite attention, then add the modern pieces behind switches.
 
 **Status:** todo
 
-- `configs/lightning-30m-*.toml`: ~30M params (e.g. 8 layers, 512 dim, 8 heads), context 2048,
-  the same token budget for every run (≈200M tokens, confirmed once tokens/s is known).
+- `configs/ablation-30m-{1..5}-*.toml`: 8 layers, 512 dim, 8 heads, context 2048 (Decision 9),
+  dropout 0.1, batch 64 (micro 16), peak LR 3e-4, 50 epochs × 2000 windows = 204.8M tokens
+  each. One LR for all five; a modern block that tolerates a higher LR isn't credited for it.
+  Queue: `configs/queues/t5-ablations.txt`.
 - Runs, all on the fixed val set:
   1. old block (`huang`, layernorm, gelu, untied)
   2. + RoPE

@@ -6,6 +6,7 @@
 #   scripts/colab.sh setup                    clone BRANCH (default master), link Drive data, install deps,
 #                                             copy tokenized/ from Drive to local disk
 #   scripts/colab.sh train <config> [flags]   launch train.py detached; log goes to Drive data/logs/
+#   scripts/colab.sh queue <queue file>       run a queue file (scripts/queue.sh) detached; same log folder
 #   scripts/colab.sh logs [n]                 tail the latest training log
 #   scripts/colab.sh status                   session status and nvidia-smi
 #   scripts/colab.sh fetch <remote> <local>   download a file from the VM
@@ -64,12 +65,18 @@ case "$cmd" in
       { nohup python -u -m src.utils.train --config $config --data_root $LOCAL_DATA --runs_dir data/runs $flags > \$log 2>&1 < /dev/null & } && \
       echo started pid \$! log $VM_REPO/\$log"
     ;;
+  queue)
+    queue="${1:?usage: scripts/colab.sh queue <queue file>}"
+    remote 30 "mkdir -p $VM_REPO/data/logs && cd $VM_REPO && log=data/logs/train_\$(date +%Y%m%d_%H%M%S).log && \
+      { PYTHON=python DATA_ROOT=$LOCAL_DATA RUNS_DIR=data/runs nohup scripts/queue.sh $(printf %q "$queue") > \$log 2>&1 < /dev/null & } && \
+      echo started pid \$! log $VM_REPO/\$log"
+    ;;
   logs)
     remote 30 "tail -n ${1:-20} \$(ls -t $VM_REPO/data/logs/train_*.log | head -1)"
     ;;
   status)
     colab status -s "$SESSION"
-    remote 30 "nvidia-smi --query-gpu=name,utilization.gpu,memory.used,memory.total --format=csv; pgrep -af 'src.utils.train' || echo 'no training process'"
+    remote 30 "nvidia-smi --query-gpu=name,utilization.gpu,memory.used,memory.total --format=csv; pgrep -af 'src.utils|queue.sh' || echo 'no training process'"
     ;;
   fetch)
     colab download -s "$SESSION" "${1:?remote path}" "${2:?local path}"
@@ -78,7 +85,7 @@ case "$cmd" in
     colab stop -s "$SESSION"
     ;;
   *)
-    sed -n '2,14p' "$0"
+    sed -n '2,15p' "$0"
     exit 1
     ;;
 esac
