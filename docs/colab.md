@@ -23,7 +23,7 @@ BRANCH=master scripts/colab.sh setup                  # 3. clone, link Drive dat
 scripts/colab.sh train configs/colab-186m-jan2026.toml  # 4. launch detached
 scripts/colab.sh logs 20                              # 5. poll
 scripts/colab.sh status                               #    GPU utilisation, is training alive
-scripts/colab.sh fetch /content/music-llm/data/runs/<run>/best.pt data/checkpoints/best.pt
+scripts/colab.sh fetch /content/music-llm/data/runs/<date>/<run>/checkpoints/best.pt data/checkpoints/best.pt
 scripts/colab.sh stop                                 # 6. release the VM; billing stops
 ```
 
@@ -37,7 +37,7 @@ What each step does:
 - **train** runs `python -u -m src.utils.train --config <config> --data_root /content/data-local
   --runs_dir data/runs [flags]` under `nohup`, logging to `data/logs/train_<timestamp>.log`. It
   reads tokens from local disk and writes everything else to Drive: the log and the run directory
-  (`data/runs/<timestamp>-<name>/` with `metrics.jsonl` and checkpoints) survive a VM drop. To continue after a drop: `scripts/colab.sh train <config> --resume data/runs/<run>/epoch_N.pt`.
+  (`data/runs/<YYYY-MM-DD>/<HHMM>-<name>/` with `metrics.jsonl` and `checkpoints/`) survive a VM drop. To continue after a drop: `scripts/colab.sh train <config> --resume data/runs/<date>/<run>` (resumes from `checkpoints/last.pt`).
 - Extra flags pass through, e.g. `scripts/colab.sh train configs/colab-186m-jan2026.toml --epochs 2 --profile_steps 10 --no-compile`.
 
 ## Gotchas (found in the first run)

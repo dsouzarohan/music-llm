@@ -76,5 +76,5 @@ order.
     `tril` (`block_size²` floats) as a persistent buffer, so it's saved in every checkpoint:
     2048² × 4 B × 12 heads × 24 layers ≈ 4.8 GB of constant data. A 186M checkpoint is 6.7 GB
     instead of ~2.2 GB (weights + AdamW moments), and `save_every = 5` wrote ~80 GB to Drive in
-    the T5 baseline. Phase 2's SDPA attention removes the buffer; until then, prefer a larger
-    `save_every` and delete intermediate `epoch_N.pt` files once a run is done.
+    the T5 baseline. Phase 2's SDPA attention removes the buffer. Since Phase 2 T1, `--keep_last`
+    (default 2) caps the `epoch_NNN.pt` snapshots kept on disk.

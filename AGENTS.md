@@ -90,9 +90,10 @@ Run everything **from the repo root**. Modules import `src.*`, so `python -m` fr
 is the only invocation that resolves cleanly.
 
 ```bash
-# Train from a run spec; flags override it. Output goes to data/runs/<timestamp>-<name>/
+# Train from a run spec; flags override it. Output goes to data/runs/<YYYY-MM-DD>/<HHMM>-<name>/
+# (config.json, metrics.jsonl, checkpoints/{best,last,epoch_NNN}.pt)
 scripts/train.sh configs/smoke.toml --data_root data --vocab_size 3000
-scripts/train.sh configs/smoke.toml --resume data/runs/<run>/epoch_5.pt   # exact resume
+scripts/train.sh configs/smoke.toml --resume data/runs/<date>/<run>   # exact resume from checkpoints/last.pt
 
 # Real runs happen on Colab: see docs/colab.md
 scripts/colab.sh train configs/colab-186m-jan2026.toml
@@ -165,5 +166,5 @@ as representative, and don't "fix" it to match Drive.
   (post-T4 runs); earlier numbers used random val windows.
 - **Changes that invalidate checkpoints:** some architecture changes make old checkpoints
   unusable, for example init, activation, norm placement, or new parameters. Call that out
-  explicitly. The owner resumes runs from `best.pt`, so they need to know.
+  explicitly. The owner resumes runs from `last.pt` and samples from `best.pt`, so they need to know.
 - Keep `src/utils/hyperparameters.py` as the single source of CLI defaults.

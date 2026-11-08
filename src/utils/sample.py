@@ -1,6 +1,8 @@
 """Samples continuations of val-song prompts from a checkpoint and reports REMI grammar error rates.
 
-uv run python -m src.utils.sample --checkpoint data/runs/<run>/best.pt --data_root data --out_dir data/output/<run>
+uv run python -m src.utils.sample --checkpoint data/runs/<YYYY-MM-DD>/<HHMM>-<name> --data_root data --out_dir data/output/<run>
+
+--checkpoint is a run directory (uses its checkpoints/best.pt) or a checkpoint file.
 """
 
 import argparse
@@ -12,7 +14,7 @@ import torch
 from miditok import REMI, TokSequence
 
 from src.model.model import MusicTransformer
-from src.utils.checkpoint import load_checkpoint
+from src.utils.checkpoint import load_checkpoint, resolve_checkpoint
 
 
 def grammar_error_rate(tokenizer, ids):
@@ -29,7 +31,7 @@ def note_count(score):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--checkpoint", required=True)
+    parser.add_argument("--checkpoint", required=True, help="Run directory (uses checkpoints/best.pt) or checkpoint file")
     parser.add_argument("--data_root", default="data")
     parser.add_argument("--out_dir", required=True)
     parser.add_argument("--n", type=int, default=4, help="Number of val songs, evenly spaced")
@@ -45,8 +47,9 @@ def main():
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    ckpt = load_checkpoint(args.checkpoint)
-    print(f"{args.checkpoint}: epoch {ckpt['epoch']}, val {ckpt.get('val_loss')}")
+    ckpt_path = resolve_checkpoint(args.checkpoint, "best.pt")
+    ckpt = load_checkpoint(ckpt_path)
+    print(f"{ckpt_path}: epoch {ckpt['epoch']}, val {ckpt.get('val_loss')}")
     model = MusicTransformer(vocab_size=ckpt["vocab_size"], **ckpt["hyperparams"]).to(device)
     model.load_state_dict(ckpt["model"])
     del ckpt

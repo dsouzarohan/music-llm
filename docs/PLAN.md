@@ -58,7 +58,7 @@ Made while planning (2026-11-08). Revisit here, not silently in code.
 
 ## T1 · Run layout and checkpoint retention
 
-**Status:** todo
+**Status:** done
 
 A chore, done first so every run in this phase uses it.
 
@@ -75,11 +75,11 @@ A chore, done first so every run in this phase uses it.
 
 **Acceptance:**
 
-- [ ] Test: a 3-epoch run with `save_every=1, keep_last=2` leaves `best.pt`, `last.pt` and
+- [x] Test: a 3-epoch run with `save_every=1, keep_last=2` leaves `best.pt`, `last.pt` and
       exactly the 2 newest snapshots.
-- [ ] Test: `--resume <run_dir>` continues exactly (the existing resume test, via the directory).
-- [ ] Test: an interrupted save (exception mid-write) leaves the previous `last.pt` loadable.
-- [ ] `scripts/verify.sh` is green.
+- [x] Test: `--resume <run_dir>` continues exactly (the existing resume test, via the directory).
+- [x] Test: an interrupted save (exception mid-write) leaves the previous `last.pt` loadable.
+- [x] `scripts/verify.sh` is green.
 
 ## T2 · Lightning.ai setup
 
