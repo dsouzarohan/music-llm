@@ -6,7 +6,7 @@
 #   scripts/colab.sh setup                    clone BRANCH (default master), link Drive data, install deps,
 #                                             copy tokenized/ from Drive to local disk
 #   scripts/colab.sh train <config> [flags]   launch train.py detached; log goes to Drive data/logs/
-#   scripts/colab.sh queue <queue file>       run a queue file (scripts/queue.sh) detached; same log folder
+#   scripts/colab.sh queue <queue file>...    run queue files in order (scripts/queue.sh) detached; same log folder
 #   scripts/colab.sh logs [n]                 tail the latest training log
 #   scripts/colab.sh status                   session status and nvidia-smi
 #   scripts/colab.sh fetch <remote> <local>   download a file or folder from the VM (scp -r)
@@ -65,9 +65,10 @@ case "$cmd" in
       echo started pid \$! log $VM_REPO/\$log"
     ;;
   queue)
-    queue="${1:?usage: scripts/colab.sh queue <queue file>}"
+    [[ $# -ge 1 ]] || { echo "usage: scripts/colab.sh queue <queue file>..." >&2; exit 2; }
+    queue=$(printf ' %q' "$@")
     remote 30 "mkdir -p $VM_REPO/data/logs && cd $VM_REPO && log=data/logs/train_\$(date +%Y%m%d_%H%M%S).log && \
-      { PYTHON=python DATA_ROOT=$LOCAL_DATA RUNS_DIR=data/runs nohup scripts/queue.sh $(printf %q "$queue") > \$log 2>&1 < /dev/null & } && \
+      { PYTHON=python DATA_ROOT=$LOCAL_DATA RUNS_DIR=data/runs nohup scripts/queue.sh $queue > \$log 2>&1 < /dev/null & } && \
       echo started pid \$! log $VM_REPO/\$log"
     ;;
   logs)
