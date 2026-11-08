@@ -11,7 +11,7 @@ CLaMP-DPO) is the reference recipe. The current bottleneck is data, not compute.
 | # | Phase | Status |
 |---|---|---|
 | 1 | Foundations | **done** 2026-11-08: baseline val 3.498 (`docs/journal/2026-11-08.md`) |
-| 2 | Modern block and small rebaseline | next |
+| 2 | Modern block and small rebaseline | **in progress** (`docs/PLAN.md`) |
 | 3 | Data at scale | planned |
 | 4 | Guitar tokenizer | planned |
 | 5 | Transfer and SFT | planned |
@@ -37,6 +37,8 @@ Bring the block up to current practice and find out whether depth or data is the
 - Compute: move training to Lightning.ai (SSH, persistent disk). A generic `scripts/remote.sh`
   over SSH (sync, launch detached, logs, fetch) plus `docs/lightning.md`; copy the corpus from
   Drive once. Colab stays usable while its credits last.
+- Run layout by date (`runs/<date>/<time>-<name>/checkpoints/{best,last}.pt`), snapshot
+  retention and atomic saves.
 - RoPE in place of absolute pos-emb + skewed `rel_bias`; `scaled_dot_product_attention` on
   `(B,H,T,D)`; RMSNorm with QK-norm; SwiGLU; tied embeddings; weight-decay groups. This also
   removes the per-head `tril` buffers (#26) and the Python head loop (#23).
