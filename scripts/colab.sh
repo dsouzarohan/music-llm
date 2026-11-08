@@ -29,8 +29,17 @@ SSH_OPTS=(-o "ProxyCommand=colab ssh --proxy-mode -s $SESSION" -o StrictHostKeyC
   -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ServerAliveInterval=30)
 SSH_HOST="root@colab-$SESSION"
 
+require_session() {
+  # `colab ssh --proxy-mode` creates a CPU runtime when the session is missing, so check first
+  colab sessions 2>/dev/null | grep -q "^\[$SESSION\]" || {
+    echo "No Colab session '$SESSION' (it may have been released). Start one with: scripts/colab.sh new" >&2
+    exit 1
+  }
+}
+
 remote() {
   # remote <timeout_s> <bash command>: runs a shell command on the VM, streams output, propagates failure
+  require_session
   ssh "${SSH_OPTS[@]}" -o BatchMode=yes "$SSH_HOST" "timeout $1 bash -lc $(printf %q "$2")"
 }
 
@@ -79,9 +88,11 @@ case "$cmd" in
     remote 30 "nvidia-smi --query-gpu=name,utilization.gpu,memory.used,memory.total --format=csv; pgrep -af 'src.utils|queue.sh' || echo 'no training process'"
     ;;
   fetch)
+    require_session
     scp -r "${SSH_OPTS[@]}" "$SSH_HOST:${1:?remote path}" "${2:?local path}"
     ;;
   ssh)
+    require_session
     ssh "${SSH_OPTS[@]}" "$SSH_HOST" "$@"
     ;;
   stop)

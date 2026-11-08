@@ -57,6 +57,11 @@ What each step does:
   120 s timeout without the command reaching the VM, once raising `Connection was lost` and then
   never exiting. `colab console` kept working, so the kernel channel was the problem. Fixed by
   moving `colab.sh` to SSH.
+- **`colab ssh` creates a runtime when the session is missing.** After the A100 was released, a
+  status check over SSH silently started a CPU runtime under the same name. `colab.sh` now checks
+  `colab sessions` before every SSH/scp call and stops if the session is gone.
+- **A session can disappear mid-run even with the browser tab open** (2026-11-08: the A100 went
+  between two checks 30 min apart, ~1 h after creation). Save often (`save_every`) and resume.
 - **`colab new` failing with a 503 traceback** means the allocator timed out (~60 s) handing out
   that GPU type: the A100 pool was full while an L4 came up in 5 s. Try another `GPU=`.
 
