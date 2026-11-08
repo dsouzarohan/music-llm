@@ -32,6 +32,30 @@ def swiglu_hidden(n_embd, mlp_ratio):
     return 64 * math.ceil(2 * mlp_ratio * n_embd / 3 / 64)
 
 
+class KVCache:
+    """Keys and values of every layer for incremental decoding, preallocated to block_size positions.
+
+    `length` is the number of positions already cached; the model advances it after each forward.
+    """
+
+    def __init__(self, n_layer, block_size):
+        self.block_size = block_size
+        self.length = 0
+        self.k = [None] * n_layer
+        self.v = [None] * n_layer
+
+    def update(self, layer, start, k, v):
+        """Writes k, v (B, H, T, Dh) at positions start..start+T-1 of `layer`; returns all cached k, v up to there."""
+        if self.k[layer] is None:
+            B, H, _, Dh = k.shape
+            self.k[layer] = k.new_empty(B, H, self.block_size, Dh)
+            self.v[layer] = v.new_empty(B, H, self.block_size, Dh)
+        end = start + k.shape[2]
+        self.k[layer][:, :, start:end] = k
+        self.v[layer][:, :, start:end] = v
+        return self.k[layer][:, :, :end], self.v[layer][:, :, :end]
+
+
 class Attention(nn.Module):
     """Causal multi-head self-attention, all heads in one F.scaled_dot_product_attention call.
 
@@ -63,27 +87,42 @@ class Attention(nn.Module):
             self.register_buffer("rope_cos", cos, persistent=False)
             self.register_buffer("rope_sin", sin, persistent=False)
 
-    def huang_mask(self, q):
-        """(B, H, T, T) additive mask: the skewed q·E scores scaled by 1/sqrt(Dh), -inf above the diagonal."""
-        B, H, T, Dh = q.shape
-        E = self.rel_bias[:, -T:, :]  # (H, T, Dh): distances -(T-1)..0
-        s_rel = q @ E.transpose(-2, -1)  # (B, H, T, T), columns are distances
-        s_rel = F.pad(s_rel, (1, 0)).view(B, H, T + 1, T)[:, :, 1:, :]  # skew: columns become key positions
-        causal = torch.ones(T, T, dtype=torch.bool, device=q.device).tril()
+    def huang_mask(self, q, Tk):
+        """Additive mask (B, H, Tq, Tk): the q·E relative scores scaled by 1/sqrt(Dh), -inf above the diagonal.
+
+        Tq == Tk (full window or prefill): skewed (B, H, T, T). Tq == 1 (one decoding step, the query is the
+        last key): (B, H, 1, Tk), no skew or causal mask needed.
+        """
+        B, H, Tq, Dh = q.shape
+        E = self.rel_bias[:, -Tk:, :]  # (H, Tk, Dh): distances -(Tk-1)..0
+        s_rel = q @ E.transpose(-2, -1)  # (B, H, Tq, Tk), columns are distances
+        if Tq == 1:
+            return s_rel * Dh ** -0.5
+        s_rel = F.pad(s_rel, (1, 0)).view(B, H, Tq + 1, Tq)[:, :, 1:, :]  # skew: columns become key positions
+        causal = torch.ones(Tq, Tq, dtype=torch.bool, device=q.device).tril()
         return (s_rel * Dh ** -0.5).masked_fill(~causal, float("-inf"))
 
-    def forward(self, x):
+    def forward(self, x, cache=None, layer=0):
+        """x (B, T, C). With a KVCache, x holds positions cache.length.. and must be either the whole prompt
+        (empty cache) or a single token."""
         B, T, C = x.shape
+        start = cache.length if cache is not None else 0
+        assert cache is None or start == 0 or T == 1, "with a cache, feed the prompt once, then one token per step"
         q, k, v = self.qkv(x).view(B, T, 3, self.n_head, self.head_size).permute(2, 0, 3, 1, 4)  # each (B, H, T, Dh)
         q, k = self.q_norm(q), self.k_norm(k)
         dropout_p = self.dropout_p if self.training else 0.0
 
         if self.pos == "rope":
-            cos, sin = self.rope_cos[:T], self.rope_sin[:T]
+            cos, sin = self.rope_cos[start:start + T], self.rope_sin[start:start + T]
             q, k = apply_rope(q, cos, sin), apply_rope(k, cos, sin)
-            out = F.scaled_dot_product_attention(q, k, v, dropout_p=dropout_p, is_causal=True)
+        if cache is not None:
+            k, v = cache.update(layer, start, k, v)
+
+        if self.pos == "rope":
+            # a single query is the newest position, so it may attend to every cached key
+            out = F.scaled_dot_product_attention(q, k, v, dropout_p=dropout_p, is_causal=T > 1)
         else:
-            out = F.scaled_dot_product_attention(q, k, v, attn_mask=self.huang_mask(q), dropout_p=dropout_p)
+            out = F.scaled_dot_product_attention(q, k, v, attn_mask=self.huang_mask(q, k.shape[2]), dropout_p=dropout_p)
 
         out = out.transpose(1, 2).reshape(B, T, C)  # concat heads
         return self.resid_dropout(self.proj(out))
@@ -121,10 +160,10 @@ class Block(nn.Module):
         self.ln1 = make_norm(norm, n_embd)
         self.ln2 = make_norm(norm, n_embd)
 
-    def forward(self, x):
+    def forward(self, x, cache=None, layer=0):
         # record_function labels show up in torch.profiler output (train.py --profile_steps)
         with torch.profiler.record_function("attention"):
-            x = x + self.attn(self.ln1(x))
+            x = x + self.attn(self.ln1(x), cache, layer)
         with torch.profiler.record_function("mlp"):
             x = x + self.ffwd(self.ln2(x))
         return x
@@ -160,7 +199,7 @@ class MusicTransformer(nn.Module):
 
         self.token_embeddings = nn.Embedding(vocab_size, n_embd)
         self.position_embeddings = nn.Embedding(block_size, n_embd) if pos == "huang" else None
-        self.blocks = nn.Sequential(*[
+        self.blocks = nn.ModuleList([
             Block(n_embd, n_head, dropout, block_size, pos, norm, mlp, qk_norm, mlp_ratio) for _ in range(n_layer)
         ])
         self.ln_f = make_norm(norm, n_embd)
@@ -192,13 +231,22 @@ class MusicTransformer(nn.Module):
         no_decay = [p for p in self.parameters() if id(p) not in linear_ids]
         return [{"params": decay, "weight_decay": weight_decay}, {"params": no_decay, "weight_decay": 0.0}]
 
-    def forward(self, idx, targets=None):
+    def forward(self, idx, targets=None, cache=None):
+        """idx (B, T) -> logits (B, T, V) and the mean cross-entropy against targets (or None).
+
+        With a KVCache, idx continues the cached sequence at position cache.length, and the cache advances by T.
+        """
         B, T = idx.shape
+        start = cache.length if cache is not None else 0
+        assert start + T <= self.block_size, f"positions {start}..{start + T - 1} exceed block_size {self.block_size}"
         x = self.token_embeddings(idx)
         if self.position_embeddings is not None:
-            x = x + self.position_embeddings(torch.arange(T, device=idx.device))[None, :, :]
+            x = x + self.position_embeddings(torch.arange(start, start + T, device=idx.device))[None, :, :]
 
-        x = self.blocks(x)
+        for i, block in enumerate(self.blocks):
+            x = block(x, cache, i)
+        if cache is not None:
+            cache.length += T
         x = self.ln_f(x)
         logits = self.last(x)
 
@@ -210,34 +258,46 @@ class MusicTransformer(nn.Module):
         return logits, loss
 
     @torch.no_grad()
-    def generate(self, idx, max_new_tokens=500, temperature=1.0, top_k=None, top_p=None):
+    def generate(self, idx, max_new_tokens=500, temperature=1.0, top_k=None, top_p=None, use_cache=True):
         """Appends max_new_tokens sampled tokens to idx (B, T) and returns (B, T + max_new_tokens).
 
-        Any prompt length works; only the last block_size tokens are fed to the model.
-        top_k keeps the k most likely tokens; top_p keeps the smallest set of most likely tokens
-        whose probabilities sum to at least top_p. Runs in eval mode and restores the previous mode.
+        Any prompt length works; the model sees at most the last block_size tokens. top_k keeps the k most
+        likely tokens; top_p keeps the smallest set of most likely tokens whose probabilities sum to at
+        least top_p. Runs in eval mode and restores the previous mode.
+
+        use_cache: process the prompt once, then one token per step against a KVCache. When the window is
+        full, the cache is dropped and the last block_size tokens are processed again, so every step sees
+        the same window as without the cache.
         """
         was_training = self.training
         self.eval()
         try:
+            cache = None
             for _ in range(max_new_tokens):
-                idx_cond = idx[:, -self.block_size:]
-                logits, _ = self(idx_cond)
-                logits = logits[:, -1, :] / max(temperature, 1e-6)  # important, we only care of the last step
-                # we also divide by temperature or 1e-6 to avoid divide by zero
-                if top_k is not None:
-                    kth = torch.topk(logits, min(top_k, logits.size(-1))).values[:, [-1]]
-                    logits = logits.masked_fill(logits < kth, float("-inf"))
-                if top_p is not None:
-                    sorted_logits, sorted_idx = torch.sort(logits, descending=True)
-                    sorted_probs = F.softmax(sorted_logits, dim=-1)
-                    # drop a token once the tokens ranked above it already reach top_p
-                    drop = sorted_probs.cumsum(dim=-1) - sorted_probs >= top_p
-                    sorted_logits = sorted_logits.masked_fill(drop, float("-inf"))
-                    logits = torch.full_like(logits, float("-inf")).scatter(1, sorted_idx, sorted_logits)
-                probs = F.softmax(logits, dim=-1)
-                idx_next = torch.multinomial(probs, num_samples=1)
-                idx = torch.cat((idx, idx_next), dim=1)
+                if not use_cache:
+                    logits, _ = self(idx[:, -self.block_size:])
+                elif cache is None or cache.length == self.block_size:
+                    cache = KVCache(self.n_layer, self.block_size)
+                    logits, _ = self(idx[:, -self.block_size:], cache=cache)
+                else:
+                    logits, _ = self(idx[:, -1:], cache=cache)
+                idx = torch.cat((idx, self.sample_next(logits[:, -1, :], temperature, top_k, top_p)), dim=1)
         finally:
             self.train(was_training)
         return idx
+
+    @staticmethod
+    def sample_next(logits, temperature, top_k, top_p):
+        """One token id per row (B, 1) from next-token logits (B, V)."""
+        logits = logits / max(temperature, 1e-6)
+        if top_k is not None:
+            kth = torch.topk(logits, min(top_k, logits.size(-1))).values[:, [-1]]
+            logits = logits.masked_fill(logits < kth, float("-inf"))
+        if top_p is not None:
+            sorted_logits, sorted_idx = torch.sort(logits, descending=True)
+            sorted_probs = F.softmax(sorted_logits, dim=-1)
+            # drop a token once the tokens ranked above it already reach top_p
+            drop = sorted_probs.cumsum(dim=-1) - sorted_probs >= top_p
+            sorted_logits = sorted_logits.masked_fill(drop, float("-inf"))
+            logits = torch.full_like(logits, float("-inf")).scatter(1, sorted_idx, sorted_logits)
+        return torch.multinomial(F.softmax(logits, dim=-1), num_samples=1)

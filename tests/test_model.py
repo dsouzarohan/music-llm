@@ -1,7 +1,7 @@
 import pytest
 import torch
 
-from src.model.model import MusicTransformer, swiglu_hidden
+from src.model.model import KVCache, MusicTransformer, swiglu_hidden
 from src.utils.metrics import flops_per_token
 from tests.conftest import BLOCKS, OLD_BLOCK, TINY
 
@@ -176,3 +176,23 @@ def test_generate_restores_training_mode(tiny_model):
     tiny_model.train()
     tiny_model.generate(torch.zeros(1, 1, dtype=torch.long), max_new_tokens=2)
     assert tiny_model.training
+
+
+@pytest.mark.parametrize("prompt_len", [3, 20])
+def test_cached_and_uncached_greedy_decoding_match(tiny_model, prompt_len):
+    """Across the block_size boundary (16), from a short prompt and from one longer than the window."""
+    prompt = torch.randint(0, TINY["vocab_size"], (2, prompt_len), generator=torch.Generator().manual_seed(1))
+    cached = tiny_model.generate(prompt, max_new_tokens=30, top_k=1, use_cache=True)
+    uncached = tiny_model.generate(prompt, max_new_tokens=30, top_k=1, use_cache=False)
+    assert torch.equal(cached, uncached)
+
+
+def test_cached_step_logits_match_full_forward(tiny_model):
+    x = torch.randint(0, TINY["vocab_size"], (2, TINY["block_size"]), generator=torch.Generator().manual_seed(2))
+    cache = KVCache(tiny_model.n_layer, tiny_model.block_size)
+    with torch.no_grad():
+        full, _ = tiny_model(x)
+        steps = [tiny_model(x[:, :5], cache=cache)[0]]
+        steps += [tiny_model(x[:, t:t + 1], cache=cache)[0] for t in range(5, x.shape[1])]
+    assert cache.length == TINY["block_size"]
+    assert torch.allclose(torch.cat(steps, dim=1), full, atol=1e-5)

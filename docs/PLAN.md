@@ -154,24 +154,28 @@ Rewrite attention, then add the modern pieces behind switches.
       holds parameters only.
 - [ ] Eager profile at micro-batch 2 shows attention's share of device time well below 38%;
       tokens/s and MFU recorded for both `pos` modes.
-- [ ] `scripts/verify.sh` is green.
+- [x] `scripts/verify.sh` is green.
 
 ## T4 · KV cache
 
-**Status:** todo
+**Status:** in progress (code done; the GPU timing waits for T2)
 
 - Per-layer K/V cache in `generate()`: process the prompt once, then one token per step.
 - Works for both `pos` modes (Huang bias for one query row; RoPE at the token's position).
-- Past `block_size`: drop the cache and re-prefill from the last `block_size − 1` tokens.
+- Past `block_size`: drop the cache and re-prefill from the last `block_size` tokens. That's
+  the same window the uncached path sees, so outputs match exactly, but every step past the
+  boundary costs a full forward pass. Keeping a shorter window to amortise it is left for later.
 - `sample.py` reports seconds per sample and uses the cache by default (`--no-cache` to compare).
 
 **Acceptance:**
 
-- [ ] Test: cached and uncached greedy decoding produce identical tokens, both `pos` modes,
-      including across the `block_size` boundary.
+- [x] Test: cached and uncached greedy decoding produce identical tokens, both `pos` modes,
+      including across the `block_size` boundary. (`test_cached_and_uncached_greedy_decoding_match`
+      for all six block variants, plus per-step logits vs a full forward.)
 - [ ] A 512-token sample from a 186M-shape model takes seconds instead of ~108 s on the
-      Lightning GPU (recorded in the journal).
-- [ ] `scripts/verify.sh` is green.
+      Lightning GPU (recorded in the journal). Local reference, random-init 186M shape on an
+      M-series Mac (MPS, fp32), 64-token prompt + 256 tokens: Huang 8.5 → 2.6 s, RoPE 6.1 → 2.2 s.
+- [x] `scripts/verify.sh` is green.
 
 ## T5 · Block ablations at ~30M
 

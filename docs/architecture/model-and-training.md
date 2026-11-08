@@ -148,7 +148,15 @@ prompt length works.
 - `top_p` (nucleus) keeps the smallest set of most likely tokens whose probability reaches
   `top_p`.
 - It switches to eval mode and `no_grad` itself, and restores the previous mode afterwards.
-- There is no EOS stop and no KV cache: every step reruns the whole window.
+- There is no EOS stop.
+- **KV cache** (`use_cache=True`, the default): the prompt is processed once into a `KVCache`
+  (each layer's k and v, preallocated to `block_size`). Then each step feeds only the newest
+  token at position `cache.length`. RoPE rotates it by that position, and Huang uses the
+  unskewed `q·E` row for distances `-(Tk-1)…0` (`huang_mask` with one query). When the cache
+  holds `block_size` positions, it's dropped and the last `block_size` tokens are processed
+  again, so each step sees exactly the uncached window. Past the boundary every step is a full
+  forward pass. `use_cache=False` reruns the window every step.
+- `sample.py` reports seconds per sample; `--no-cache` compares against the uncached path.
 
 `playground/model_run.ipynb` loads `data/checkpoints/best.pt` (or `$MUSIC_LLM_CKPT`) with
 `load_checkpoint`, which strips the `_orig_mod.` prefix pre-T3 compiled runs saved, and rebuilds the model

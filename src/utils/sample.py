@@ -40,6 +40,7 @@ def main():
     parser.add_argument("--temperature", type=float, default=0.9)
     parser.add_argument("--top_k", type=int, default=40)
     parser.add_argument("--top_p", type=float, default=0.95)
+    parser.add_argument("--cache", action=argparse.BooleanOptionalAction, default=True, help="KV cache (--no-cache to compare)")
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
@@ -68,7 +69,8 @@ def main():
         t0 = time.perf_counter()
         with autocast:
             out = model.generate(torch.tensor([ids[:P]], dtype=torch.long, device=device), max_new_tokens=args.max_new_tokens,
-                                 temperature=args.temperature, top_k=args.top_k, top_p=args.top_p)[0].tolist()
+                                 temperature=args.temperature, top_k=args.top_k, top_p=args.top_p,
+                                 use_cache=args.cache)[0].tolist()
         secs = time.perf_counter() - t0
         full, prompt = tokenizer.decode(out), tokenizer.decode(out[:P])
         stem = f"{i}_{song.stem[:40]}"
@@ -82,6 +84,7 @@ def main():
             "seconds": secs,
         })
         print(json.dumps(rows[-1]))
+    print(f"mean {sum(r['seconds'] for r in rows) / len(rows):.2f} s per sample ({'cached' if args.cache else 'uncached'})")
     (out_dir / "samples.json").write_text(json.dumps({"args": vars(args), "samples": rows}, indent=1) + "\n")
     print(f"Wrote {out_dir}")
 
