@@ -29,6 +29,8 @@ diffs readable.
     squash-merge. The PR title is the squash commit, so write it as a Conventional Commit.
 - **`docs/known-issues.md`** lists bugs with file:line. Tasks reference issues by number.
   When you fix one, mark it fixed there.
+- **`docs/learnings/`** holds plain-language notes on concepts, one file per concept, indexed in
+  its README. When the owner asks for a concept to be explained, offer to add or update a note.
 - **`docs/journal/`** is the dated project log, one file per entry. Add an entry when a session
   produces results worth remembering, such as a training run, a finding or a decision.
 

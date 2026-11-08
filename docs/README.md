@@ -31,7 +31,8 @@ How the system works today. Update these when the code changes.
 | File | What it holds |
 |---|---|
 | [references.md](references.md) | Papers, datasets, repos and docs the project uses or plans to use |
-| [journal/](journal/README.md) | Dated project log from Apr 2025 onward (migrated from Notion), plus learning notes |
+| [journal/](journal/README.md) | Dated project log from Apr 2025 onward (migrated from Notion) |
+| [learnings/](learnings/README.md) | Plain-language notes on concepts met along the way (RoPE, KV cache, MIDI), one file each |
 
 The long-form research write-up "Scaling music-llm" (Oct 2026) is a private artifact:
 https://claude.ai/artifact/2DwzEbqu9RBaqa1uVAorge. `ROADMAP.md` is its in-repo summary.

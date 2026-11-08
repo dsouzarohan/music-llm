@@ -21,10 +21,7 @@ The Notion page also links its research threads in
 [ChatGPT](https://chatgpt.com/g/g-p-67fba7907c408191876a192f8df9495e-prj-music-transformer/project)
 and [Gemini](https://gemini.google.com/app/5b612ef64d7b60b9).
 
-## Learnings
-
-- [MIDI tokenization](learnings/midi-tokenization.md): MIDI messages, channels, and how
-  time division works.
+Concept notes live in [`../learnings/`](../learnings/README.md).
 
 ## Entries
 
