@@ -187,7 +187,8 @@ Rewrite attention, then add the modern pieces behind switches.
 
 - `configs/ablation-30m-{1..5}-*.toml`: 8 layers, 512 dim, 8 heads, context 2048 (Decision 9),
   dropout 0.1, batch 64 (micro 16), peak LR 3e-4, 50 epochs × 2000 windows = 204.8M tokens
-  each. One LR for all five; a modern block that tolerates a higher LR isn't credited for it.
+  each. `last.pt` every 2 epochs, so a dropped VM loses at most ~4 min of training (resume with
+  `--resume <run_dir>`). One LR for all five; a modern block that tolerates a higher LR isn't credited for it.
   Queue: `configs/queues/t5-ablations.txt`.
 - Runs, all on the fixed val set:
   1. old block (`huang`, layernorm, gelu, untied)
