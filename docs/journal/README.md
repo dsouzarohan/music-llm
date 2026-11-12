@@ -61,3 +61,4 @@ Notes on reading the entries:
 | [2025-12-29](2025-12-29.md) | GELU + GPT-2 init + 24 layers (186M): val 3.72 (ppl 41); data diagnosis |
 | [2026-01-31](2026-01-31.md) | Found and fixed Q = K = V; val 3.46 (ppl 32); scraper plan |
 | [2026-11-08](2026-11-08.md) | Phase 1 baseline on Colab A100 40GB: val 3.498 (ppl 33.1) on the fixed val set; MFU 12.8% compiled, 1.7% eager; attention is 38% of GPU time |
+| [2026-11-12](2026-11-12.md) | Phase 2 T3–T5: batched attention 1.44× (RoPE 4.6×), samples 108 → 12 s; 30M modern block val 2.323 (ppl 10.2), now the default |

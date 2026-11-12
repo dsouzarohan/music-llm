@@ -38,14 +38,14 @@ def test_param_count_matches_formula(tiny_model):
 
 def test_param_count_matches_colab_186m():
     with torch.device("meta"):
-        model = MusicTransformer(vocab_size=3500, n_embd=768, n_head=12, n_layer=24, block_size=2048)
+        model = MusicTransformer(vocab_size=3500, n_embd=768, n_head=12, n_layer=24, block_size=2048, **OLD_BLOCK)
     assert n_params(model) == 186_426_284
 
 
 def test_swiglu_matches_gelu_param_count_at_186m_shape():
     with torch.device("meta"):
-        gelu = MusicTransformer(vocab_size=3500, n_embd=768, n_head=12, n_layer=24, block_size=2048)
-        swiglu = MusicTransformer(vocab_size=3500, n_embd=768, n_head=12, n_layer=24, block_size=2048, mlp="swiglu")
+        gelu = MusicTransformer(vocab_size=3500, n_embd=768, n_head=12, n_layer=24, block_size=2048, **OLD_BLOCK)
+        swiglu = MusicTransformer(vocab_size=3500, n_embd=768, n_head=12, n_layer=24, block_size=2048, **{**OLD_BLOCK, "mlp": "swiglu"})
     # only the gate/value biases differ: one extra bias vector of size hidden per layer
     assert n_params(swiglu) - n_params(gelu) == 24 * (swiglu_hidden(768, 3) * 2 - 3 * 768)
 

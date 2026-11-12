@@ -180,7 +180,7 @@ class MusicTransformer(nn.Module):
     """
 
     def __init__(self, vocab_size, n_embd=128, n_head=4, n_layer=4, block_size=128, dropout=0.2,
-                 pos="huang", norm="layernorm", mlp="gelu", qk_norm=False, tie_embeddings=False, mlp_ratio=3):
+                 pos="rope", norm="rmsnorm", mlp="swiglu", qk_norm=True, tie_embeddings=True, mlp_ratio=3):
         super().__init__()
         if norm not in NORMS:
             raise ValueError(f"norm must be one of {NORMS}, got {norm!r}")

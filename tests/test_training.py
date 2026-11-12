@@ -10,7 +10,7 @@ from src.model.model import MusicTransformer
 from src.utils import checkpoint as ckpt_mod
 from src.utils.checkpoint import load_checkpoint, save_checkpoint
 from src.utils.train import accumulation_groups, parse_args, resolve_run_dir, train
-from tests.conftest import TINY, tiny_config
+from tests.conftest import MODERN, OLD_BLOCK, TINY, tiny_config
 from tests.synthetic import write_corpus
 
 REPO = Path(__file__).resolve().parent.parent
@@ -141,7 +141,7 @@ def test_interrupted_save_keeps_previous_checkpoint(tmp_path, monkeypatch):
 
 def test_compiled_model_checkpoint_loads_into_plain_model(tmp_path):
     torch.manual_seed(0)
-    model = MusicTransformer(**TINY)
+    model = MusicTransformer(**TINY, **OLD_BLOCK)
     compiled = torch.compile(model)
     assert next(iter(compiled.state_dict())).startswith("_orig_mod.")
     optimizer = torch.optim.AdamW(model.parameters())
@@ -183,6 +183,15 @@ def test_modern_block_trains_and_reloads_from_checkpoint(corpus, tmp_path):
     model = MusicTransformer(vocab_size=state["vocab_size"], **state["hyperparams"])
     model.load_state_dict(state["model"])
     assert model.last.weight is model.token_embeddings.weight
+
+
+def test_default_block_is_modern_in_cli_and_model():
+    """T5 picked the full modern block: train.py's defaults and MusicTransformer's agree on it."""
+    args = parse_args([])
+    cli = {k: getattr(args, k) for k in ("pos", "norm", "mlp", "qk_norm", "tie_embeddings")}
+    assert cli == {"pos": "rope", **MODERN}
+    model = MusicTransformer(**TINY)
+    assert {k: getattr(model, k) for k in cli} == cli
 
 
 def test_device_kernel_time_counts_each_kernel_once():

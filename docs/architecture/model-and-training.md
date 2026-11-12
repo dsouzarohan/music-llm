@@ -9,14 +9,16 @@ flags and TOML keys of the same name; defaults in `hyperparameters.py`):
 
 | Switch | Values | Default |
 |---|---|---|
-| `pos` | `huang`: Music Transformer relative attention + absolute position embedding · `rope`: rotary embeddings on q and k, no position embedding | `huang` |
-| `norm` | `layernorm` · `rmsnorm` (block norms and `ln_f`) | `layernorm` |
-| `mlp` | `gelu`: hidden `mlp_ratio·C` · `swiglu`: hidden `2/3·mlp_ratio·C` rounded up to 64, the same parameter count | `gelu` |
+| `pos` | `huang`: Music Transformer relative attention + absolute position embedding · `rope`: rotary embeddings on q and k, no position embedding | `rope` |
+| `norm` | `layernorm` · `rmsnorm` (block norms and `ln_f`) | `rmsnorm` |
+| `mlp` | `gelu`: hidden `mlp_ratio·C` · `swiglu`: hidden `2/3·mlp_ratio·C` rounded up to 64, the same parameter count | `swiglu` |
 | `mlp_ratio` | GELU hidden size multiple | 3 |
-| `qk_norm` | RMSNorm (over Dh, weights shared by heads) on q and k | off |
-| `tie_embeddings` | `lm_head.weight` is the token embedding tensor | off |
+| `qk_norm` | RMSNorm (over Dh, weights shared by heads) on q and k | on |
+| `tie_embeddings` | `lm_head.weight` is the token embedding tensor | on |
 
-The defaults are the pre-Phase-2 block. Phase 2 T5 picks the new defaults by ablation.
+The defaults are the full modern block, chosen by the Phase 2 T5 ablations (`docs/journal/2026-11-12.md`).
+The pre-Phase-2 block is `pos=huang, norm=layernorm, mlp=gelu`, `qk_norm` and `tie_embeddings` off;
+`configs/colab-186m-jan2026.toml` and `configs/ablation-30m-1-old.toml` set it explicitly.
 
 ```
 idx (B,T)
@@ -83,7 +85,7 @@ checks this.
 ## Parameter count
 
 `tests/test_model.py::expected_params` checks this formula for every tested block variant.
-With the default block, the 24-layer config gives exactly the **186,426,284** printed in the
+With the pre-Phase-2 block, the 24-layer config gives exactly the **186,426,284** printed in the
 2025-12-29 Colab log.
 
 With C = embedding dim, V = vocab, T = block_size, L = layers, H = heads, Dh = C/H, r = `mlp_ratio`:
