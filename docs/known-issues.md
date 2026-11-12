@@ -78,3 +78,10 @@ order.
     instead of ~2.2 GB (weights + AdamW moments), and `save_every = 5` wrote ~80 GB to Drive in
     the T5 baseline. Phase 2's SDPA attention removes the buffer. Since Phase 2 T1, `--keep_last`
     (default 2) caps the `epoch_NNN.pt` snapshots kept on disk.
+27. **Fixed** (PR #5, Phase 2). **`profile_report` overstates device time 2–3×** (`src/utils/train.py`,
+    `profile_report`). It summed `self_device_time_total` over every `key_averages()` event: torch
+    2.14 reports each kernel's time on the kernel and again on the CPU op that launched it, and adds
+    GPU-side spans for `record_function` regions and `ProfilerStep`. Result: "device busy 300% of
+    wall", and region shares understated. Now `device_kernel_time` sums device-side,
+    non-annotation events only. The 2026-11-08 baseline's 38% attention share and 32% busy came
+    from the old code.

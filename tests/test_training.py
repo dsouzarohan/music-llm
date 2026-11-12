@@ -183,3 +183,18 @@ def test_modern_block_trains_and_reloads_from_checkpoint(corpus, tmp_path):
     model = MusicTransformer(vocab_size=state["vocab_size"], **state["hyperparams"])
     model.load_state_dict(state["model"])
     assert model.last.weight is model.token_embeddings.weight
+
+
+def test_device_kernel_time_counts_each_kernel_once():
+    """CPU ops repeat their kernels' time as self device time, and annotations span them; neither is counted."""
+    from types import SimpleNamespace as E
+
+    from src.utils.train import device_kernel_time
+    cpu, cuda = torch.autograd.DeviceType.CPU, torch.autograd.DeviceType.CUDA
+    events = [
+        E(device_type=cpu, is_user_annotation=False, self_device_time_total=30),   # aten::mm, launched the kernel
+        E(device_type=cuda, is_user_annotation=False, self_device_time_total=30),  # the gemm kernel
+        E(device_type=cuda, is_user_annotation=False, self_device_time_total=5),   # a memcpy
+        E(device_type=cuda, is_user_annotation=True, self_device_time_total=50),   # ProfilerStep#3 on the GPU
+    ]
+    assert device_kernel_time(events) == 35

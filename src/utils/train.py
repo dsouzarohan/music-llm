@@ -169,6 +169,15 @@ def resolve_run_dir(args, now=None):
     return run_dir
 
 
+def device_kernel_time(events):
+    """Total device time of kernels and memcpys/memsets, each counted once: device-side events only.
+
+    Skips CPU ops (their self device time repeats the kernels they launched) and GPU user annotations
+    (`record_function` and ProfilerStep spans mirrored onto the device timeline)."""
+    return sum(e.self_device_time_total for e in events
+               if e.device_type != torch.autograd.DeviceType.CPU and not e.is_user_annotation)
+
+
 def profile_report(prof, device):
     """Where the profiled steps spent time: wall vs CPU vs GPU kernels, the forward "attention"/"mlp"
     regions' share of device time, then the op table."""
@@ -176,7 +185,7 @@ def profile_report(prof, device):
     cpu_side = {e.key: e for e in events if e.device_type == torch.autograd.DeviceType.CPU}
     wall = sum(e.cpu_time_total for k, e in cpu_side.items() if k.startswith("ProfilerStep"))
     cpu = sum(e.self_cpu_time_total for e in events)
-    kernels = sum(e.self_device_time_total for e in events)
+    kernels = device_kernel_time(events)
     lines = [
         f"profiled steps: wall {wall / 1e3:.1f} ms, CPU {cpu / 1e3:.1f} ms, device kernels {kernels / 1e3:.1f} ms"
         + (f" (device busy {kernels / wall:.0%} of wall)" if kernels and wall else ""),
