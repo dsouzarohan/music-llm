@@ -1,0 +1,12 @@
+# Phase 2 T3/T4 GPU measurements at the 186M baseline shape (A100). Run dirs on local disk.
+# T3: eager profile at micro-batch 2, 10 steps (as the 2026-11-08 baseline profile).
+src.utils.train --config configs/colab-186m-jan2026.toml --data_root $DATA_ROOT --run_dir /content/runs-local/profile-huang --pos huang --epochs 1 --train_windows 64 --micro_batch_size 2 --batch_size 16 --val_windows 16 --profile_steps 10 --no-compile --keep_last 0
+src.utils.train --config configs/colab-186m-jan2026.toml --data_root $DATA_ROOT --run_dir /content/runs-local/profile-rope --pos rope --epochs 1 --train_windows 64 --micro_batch_size 2 --batch_size 16 --val_windows 16 --profile_steps 10 --no-compile --keep_last 0
+# T3: compiled throughput at micro-batch 4 (as the baseline); epoch 1 is the clean number.
+src.utils.train --config configs/colab-186m-jan2026.toml --data_root $DATA_ROOT --run_dir /content/runs-local/tput-huang --pos huang --epochs 2 --micro_batch_size 4 --keep_last 0
+src.utils.train --config configs/colab-186m-jan2026.toml --data_root $DATA_ROOT --run_dir /content/runs-local/tput-rope --pos rope --epochs 2 --micro_batch_size 4 --keep_last 0
+# T4: one 512-token sample per mode, cached vs uncached.
+src.utils.sample --checkpoint /content/runs-local/tput-huang --data_root $DATA_ROOT --out_dir /content/runs-local/samples-huang-cache --n 1
+src.utils.sample --checkpoint /content/runs-local/tput-huang --data_root $DATA_ROOT --out_dir /content/runs-local/samples-huang-nocache --n 1 --no-cache
+src.utils.sample --checkpoint /content/runs-local/tput-rope --data_root $DATA_ROOT --out_dir /content/runs-local/samples-rope-cache --n 1
+src.utils.sample --checkpoint /content/runs-local/tput-rope --data_root $DATA_ROOT --out_dir /content/runs-local/samples-rope-nocache --n 1 --no-cache

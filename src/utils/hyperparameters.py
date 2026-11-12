@@ -7,3 +7,11 @@ N_LAYER = 8
 N_HEAD = 4
 DROPOUT = 0.2
 LEARNING_RATE = 3e-4
+# block switches (see MusicTransformer); the full modern block, chosen in Phase 2 T5
+POS = "rope"
+NORM = "rmsnorm"
+MLP = "swiglu"
+MLP_RATIO = 3
+QK_NORM = True
+TIE_EMBEDDINGS = True
+WEIGHT_DECAY = 0.01

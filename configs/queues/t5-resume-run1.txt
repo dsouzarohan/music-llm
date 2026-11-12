@@ -1,0 +1,7 @@
+# Phase 2 T5 after the 2026-11-08 Drive-mount drop: resume run 1 from its last.pt (epoch 34 of 50),
+# then runs 2-5. Needs `scripts/colab.sh pull 2026-11-08/1314-ablation-30m-1-old` first.
+src.utils.train --config configs/ablation-30m-1-old.toml --data_root $DATA_ROOT --resume $RUNS_DIR/2026-11-08/1314-ablation-30m-1-old
+src.utils.train --config configs/ablation-30m-2-rope.toml --data_root $DATA_ROOT --runs_dir $RUNS_DIR
+src.utils.train --config configs/ablation-30m-3-rope-rms-qk.toml --data_root $DATA_ROOT --runs_dir $RUNS_DIR
+src.utils.train --config configs/ablation-30m-4-rope-rms-qk-swiglu.toml --data_root $DATA_ROOT --runs_dir $RUNS_DIR
+src.utils.train --config configs/ablation-30m-5-modern.toml --data_root $DATA_ROOT --runs_dir $RUNS_DIR

@@ -27,7 +27,7 @@ decision depends on it. **Reading** means it's on the list for a planned phase (
 | Used | [symusic](https://github.com/Yikai-Liao/symusic) | Fast C++ MIDI parsing, used by miditok and for the bend scan |
 | Used | [music21](https://web.mit.edu/music21/) | Current guitar-part extraction |
 | Reading | [PyGuitarPro](https://github.com/Perlence/PyGuitarPro) | Reading Guitar Pro files for a tab tokenizer (phase 4) |
-| Used | [MIDI.org](https://www.midi.org/) and [MidiTok: the MIDI protocol](https://miditok.readthedocs.io/en/latest/midi.html) | MIDI basics (`docs/journal/learnings/midi-tokenization.md`) |
+| Used | [MIDI.org](https://www.midi.org/) and [MidiTok: the MIDI protocol](https://miditok.readthedocs.io/en/latest/midi.html) | MIDI basics (`docs/learnings/midi-tokenization.md`) |
 
 ## Datasets
 

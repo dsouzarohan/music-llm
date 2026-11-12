@@ -1,0 +1,22 @@
+# Phase 2 T5 ablation 4/5 (+ SwiGLU). Same shape and token budget as the other four:
+# 8L/512/8H, context 2048, 50 epochs x 2000 windows = 204.8M tokens. Needs the Drive corpus (vocab 3500).
+name = "ablation-30m-4-rope-rms-qk-swiglu"
+vocab_size = 3500
+block_size = 2048
+n_layer = 8
+n_head = 8
+embedding_dim = 512
+dropout = 0.1
+batch_size = 64
+micro_batch_size = 16
+learning_rate = 3e-4
+epochs = 50
+train_windows = 2000
+val_windows = 512
+save_every = 2
+keep_last = 1
+pos = "rope"
+norm = "rmsnorm"
+mlp = "swiglu"
+qk_norm = true
+tie_embeddings = false

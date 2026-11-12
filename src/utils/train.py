@@ -15,7 +15,8 @@ import torch
 from torch.utils.data import DataLoader
 
 from src.model.model import MusicTransformer
-from src.utils.checkpoint import load_checkpoint, model_hyperparams, save_checkpoint
+from src.utils.checkpoint import (CHECKPOINT_DIR, load_checkpoint, model_hyperparams, prune_snapshots,
+                                  resolve_checkpoint, run_dir_of, save_checkpoint, snapshot_name)
 from src.utils.config import apply_config_file
 from src.utils.data.guitar_dataset import GuitarDataset
 from src.utils.data.random_guitar_seq_dataset import RandomGuitarSeqDataset
@@ -30,7 +31,14 @@ from src.utils.hyperparameters import (
     DROPOUT,
     VOCAB_SIZE,
     LEARNING_RATE,
-    MICRO_BATCH_SIZE
+    MICRO_BATCH_SIZE,
+    POS,
+    NORM,
+    MLP,
+    MLP_RATIO,
+    QK_NORM,
+    TIE_EMBEDDINGS,
+    WEIGHT_DECAY,
 )
 
 # -------
@@ -75,14 +83,15 @@ def build_parser():
     parser.add_argument("--name", type=str, default="run", help="Run name, used in the run directory name")
     parser.add_argument("--data_root", type=str, default="data")
     parser.add_argument("--runs_dir", type=str, default=None, help="Parent of run directories (default: {data_root}/runs)")
-    parser.add_argument("--run_dir", type=str, default=None, help="Exact run directory (default: {runs_dir}/<timestamp>-<name>, or the resumed checkpoint's directory)")
+    parser.add_argument("--run_dir", type=str, default=None, help="Exact run directory (default: {runs_dir}/<YYYY-MM-DD>/<HHMM>-<name>, or the resumed run's directory)")
     parser.add_argument("--epochs", type=int, default=20)
     parser.add_argument("--batch_size", type=int, default=BATCH_SIZE)
     parser.add_argument("--micro_batch_size", type=int, default=MICRO_BATCH_SIZE)
     parser.add_argument("--train_windows", type=int, default=2000, help="Random training windows per epoch")
     parser.add_argument("--val_windows", type=int, default=512, help="Fixed validation windows, evenly spaced over the val set")
     parser.add_argument("--use_guitar_ds", action="store_true", help="Use GuitarDataset instead of RandomGuitarSeqDataset for training")
-    parser.add_argument("--save_every", type=int, default=0, help="Save checkpoint every N epochs (0 = only best + final)")
+    parser.add_argument("--save_every", type=int, default=0, help="Every N epochs, overwrite last.pt and write an epoch_NNN.pt snapshot (0 = last.pt only at the end)")
+    parser.add_argument("--keep_last", type=int, default=2, help="Keep this many newest epoch_NNN.pt snapshots (0 = write none); best.pt and last.pt are always kept")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", type=str, default="auto", help="auto, cuda, mps or cpu")
     parser.add_argument("--compile", action=argparse.BooleanOptionalAction, default=True, help="torch.compile the model")
@@ -98,9 +107,18 @@ def build_parser():
     parser.add_argument("--dropout", type=float, default=DROPOUT, help="Dropout rate")
     parser.add_argument("--vocab_size", type=int, default=VOCAB_SIZE, help="Vocabulary size")
     parser.add_argument("--learning_rate", type=float, default=LEARNING_RATE, help="Peak learning rate")
+    parser.add_argument("--weight_decay", type=float, default=WEIGHT_DECAY, help="AdamW weight decay on Linear weights")
+
+    # Block switches
+    parser.add_argument("--pos", choices=["huang", "rope"], default=POS, help="Position scheme")
+    parser.add_argument("--norm", choices=["layernorm", "rmsnorm"], default=NORM)
+    parser.add_argument("--mlp", choices=["gelu", "swiglu"], default=MLP)
+    parser.add_argument("--mlp_ratio", type=float, default=MLP_RATIO, help="GELU hidden = ratio·C; SwiGLU matches its params")
+    parser.add_argument("--qk_norm", action=argparse.BooleanOptionalAction, default=QK_NORM, help="RMSNorm on q and k per head")
+    parser.add_argument("--tie_embeddings", action=argparse.BooleanOptionalAction, default=TIE_EMBEDDINGS, help="Share token embedding and lm_head weights")
 
     # Training run arguments
-    parser.add_argument("--resume", type=str, default=None, help="Checkpoint to resume (model, optimizer, scheduler, RNG)")
+    parser.add_argument("--resume", type=str, default=None, help="Run directory (resumes its checkpoints/last.pt) or checkpoint file; restores model, optimizer, scheduler, RNG")
     parser.add_argument("--finetune_from", type=str, default=None, help="Checkpoint to load model weights from, with a fresh optimizer")
 
     return parser
@@ -134,13 +152,30 @@ def accumulation_groups(num_micro_batches, grad_accum_steps):
     return sizes
 
 
-def resolve_run_dir(args):
+def resolve_run_dir(args, now=None):
+    """--run_dir if given, else the resumed run's directory, else a new `{runs_dir}/<YYYY-MM-DD>/<HHMM>-<name>`
+    (suffixed `-2`, `-3`, ... if that already exists)."""
     if args.run_dir:
         return Path(args.run_dir)
     if args.resume:
-        return Path(args.resume).parent
-    runs_dir = Path(args.runs_dir) if args.runs_dir else Path(args.data_root) / "runs"
-    return runs_dir / f"{datetime.now():%Y%m%d-%H%M%S}-{args.name}"
+        return run_dir_of(resolve_checkpoint(args.resume, "last.pt"))
+    now = now or datetime.now()
+    day = (Path(args.runs_dir) if args.runs_dir else Path(args.data_root) / "runs") / f"{now:%Y-%m-%d}"
+    base = f"{now:%H%M}-{args.name}"
+    run_dir, n = day / base, 1
+    while run_dir.exists():
+        n += 1
+        run_dir = day / f"{base}-{n}"
+    return run_dir
+
+
+def device_kernel_time(events):
+    """Total device time of kernels and memcpys/memsets, each counted once: device-side events only.
+
+    Skips CPU ops (their self device time repeats the kernels they launched) and GPU user annotations
+    (`record_function` and ProfilerStep spans mirrored onto the device timeline)."""
+    return sum(e.self_device_time_total for e in events
+               if e.device_type != torch.autograd.DeviceType.CPU and not e.is_user_annotation)
 
 
 def profile_report(prof, device):
@@ -150,7 +185,7 @@ def profile_report(prof, device):
     cpu_side = {e.key: e for e in events if e.device_type == torch.autograd.DeviceType.CPU}
     wall = sum(e.cpu_time_total for k, e in cpu_side.items() if k.startswith("ProfilerStep"))
     cpu = sum(e.self_cpu_time_total for e in events)
-    kernels = sum(e.self_device_time_total for e in events)
+    kernels = device_kernel_time(events)
     lines = [
         f"profiled steps: wall {wall / 1e3:.1f} ms, CPU {cpu / 1e3:.1f} ms, device kernels {kernels / 1e3:.1f} ms"
         + (f" (device busy {kernels / wall:.0%} of wall)" if kernels and wall else ""),
@@ -188,7 +223,8 @@ def train(args):
     train_tok_folder = data_root / "tokenized" / "train-aug"
     val_tok_folder = data_root / "tokenized" / "val"
     run_dir = resolve_run_dir(args)
-    run_dir.mkdir(parents=True, exist_ok=True)
+    ckpt_dir = run_dir / CHECKPOINT_DIR
+    ckpt_dir.mkdir(parents=True, exist_ok=True)
 
     grad_accum_steps = max(1, args.batch_size // args.micro_batch_size) # handles cases if our batch size is not perfectly divisible
 
@@ -232,13 +268,13 @@ def train(args):
     # model
     # -------
 
-    model = MusicTransformer(args.vocab_size, args.embedding_dim, args.n_head, args.n_layer, args.block_size, args.dropout).to(device)
+    model = MusicTransformer(args.vocab_size, **model_hyperparams(vars(args))).to(device)
     n_params = sum(p.numel() for p in model.parameters())
-    flops_tok = flops_per_token(n_params, args.n_layer, args.embedding_dim, args.block_size)
+    flops_tok = flops_per_token(model)
     peak = args.peak_flops or device_peak_flops(device)
     print(f"Parameters {n_params:,}, {flops_tok / 1e9:.2f} GFLOP/token, peak {peak or 'unknown'} FLOP/s")
 
-    optimizer = torch.optim.AdamW(model.parameters(), lr=args.learning_rate, betas=(0.9, 0.95))
+    optimizer = torch.optim.AdamW(model.param_groups(args.weight_decay), lr=args.learning_rate, betas=(0.9, 0.95))
 
     num_micro_batches = len(train_dl) # number of batches per epoch
     steps_per_epoch = math.ceil(num_micro_batches / grad_accum_steps)
@@ -261,7 +297,8 @@ def train(args):
     start_epoch, step, best_val_loss = 0, 0, float("inf")
 
     if args.resume:
-        ckpt = load_checkpoint(args.resume, map_location="cpu") # load_state_dict copies onto the model/optimizer device
+        resume_path = resolve_checkpoint(args.resume, "last.pt")
+        ckpt = load_checkpoint(resume_path, map_location="cpu") # load_state_dict copies onto the model/optimizer device
         model.load_state_dict(ckpt["model"])
         start_epoch = ckpt["epoch"] + 1
         step = ckpt.get("step", 0)
@@ -279,7 +316,7 @@ def train(args):
         if ckpt.get("rng") is not None:
             set_rng_state(ckpt["rng"])
         del ckpt
-        print(f"Resumed {args.resume} at epoch {start_epoch}, step {step}, best val {best_val_loss:.4f}")
+        print(f"Resumed {resume_path} at epoch {start_epoch}, step {step}, best val {best_val_loss:.4f}")
     else:
         if args.finetune_from:
             model.load_state_dict(load_checkpoint(args.finetune_from, map_location="cpu")["model"])
@@ -301,7 +338,7 @@ def train(args):
     metrics_path = run_dir / "metrics.jsonl"
 
     def checkpoint(name, epoch, val_loss):
-        save_checkpoint(run_dir / name, model=model, optimizer=optimizer, scheduler=scheduler, scaler=scaler,
+        save_checkpoint(ckpt_dir / name, model=model, optimizer=optimizer, scheduler=scheduler, scaler=scaler,
                         epoch=epoch, step=step, val_loss=val_loss, best_val_loss=best_val_loss, config=config,
                         rng=rng_state())
 
@@ -387,10 +424,13 @@ def train(args):
             best_val_loss = val_loss
             checkpoint("best.pt", epoch, val_loss)
             print(f"Saved new best checkpoint (val_loss={best_val_loss:.4f})")
-        if args.save_every > 0 and (epoch + 1) % args.save_every == 0:
-            checkpoint(f"epoch_{epoch + 1}.pt", epoch, val_loss)
-
-    checkpoint("final.pt", args.epochs - 1, val_loss)
+        periodic = args.save_every > 0 and (epoch + 1) % args.save_every == 0
+        if periodic or epoch == args.epochs - 1:
+            checkpoint("last.pt", epoch, val_loss)
+        if periodic and args.keep_last > 0:
+            checkpoint(snapshot_name(epoch + 1), epoch, val_loss)
+            for p in prune_snapshots(ckpt_dir, args.keep_last):
+                print(f"Deleted old snapshot {p.name}")
     print("Training finished")
     return run_dir
 

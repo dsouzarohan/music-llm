@@ -26,7 +26,7 @@ def smoke_run(tmp_path_factory):
 
 def test_smoke_train_completes(smoke_run):
     run_dir, _ = smoke_run
-    assert (run_dir / "best.pt").exists() and (run_dir / "final.pt").exists()
+    assert (run_dir / "checkpoints" / "best.pt").exists() and (run_dir / "checkpoints" / "last.pt").exists()
     rows = [json.loads(line) for line in (run_dir / "metrics.jsonl").read_text().splitlines()]
     val_loss = rows[-1]["val_loss"]
     assert math.isfinite(val_loss) and val_loss < math.log(VOCAB) + 0.5
@@ -34,6 +34,6 @@ def test_smoke_train_completes(smoke_run):
 
 def test_checkpoint_loads_into_uncompiled_model(smoke_run):
     run_dir, _ = smoke_run
-    state = torch.load(run_dir / "best.pt", map_location="cpu", weights_only=False)
+    state = torch.load(run_dir / "checkpoints" / "best.pt", map_location="cpu", weights_only=False)
     model = MusicTransformer(vocab_size=state["vocab_size"], **state["hyperparams"])
     model.load_state_dict(state["model"])

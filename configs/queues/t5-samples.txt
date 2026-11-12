@@ -1,0 +1,5 @@
+# Phase 2 T5: listen to the old block and the modern block at 30M on the same four val prompts the
+# 186M baseline used (sample.py defaults: n=4, prompt 64, 512 new tokens, fixed seeds).
+# Needs `scripts/colab.sh pull 2026-11-08/<run>` for both runs first.
+src.utils.sample --checkpoint $RUNS_DIR/2026-11-08/1314-ablation-30m-1-old --data_root $DATA_ROOT --out_dir $RUNS_DIR/2026-11-08/1314-ablation-30m-1-old/samples
+src.utils.sample --checkpoint $RUNS_DIR/2026-11-08/2053-ablation-30m-5-modern --data_root $DATA_ROOT --out_dir $RUNS_DIR/2026-11-08/2053-ablation-30m-5-modern/samples

@@ -59,22 +59,29 @@ order.
 
 ## Hygiene / perf
 
-21. **Fixed** (PR #3; `Head` and the hardcoded `mlp_ratio` stay until Phase 2). **Dead or stale code in `model.py`:**
+21. **Fixed** (PR #3; `Head` and `mlp_ratio` in PR #5, Phase 2 T3). **Dead or stale code in `model.py`:**
     - unused hyperparameters import
     - unused `Head` class
     - `FeedForward.dropout` is unused
     - the stale "scalar relative bias" comment
     - hardcoded `mlp_ratio=3`
     - no `n_embd % n_head` assert
-22. **Weight decay is applied to LayerNorm weights, biases and embeddings.** There are no
+22. **Fixed** (PR #5, Phase 2 T3: `MusicTransformer.param_groups`). **Weight decay is applied to LayerNorm weights, biases and embeddings.** There are no
     decay / no-decay param groups.
-23. **Heads run in a Python loop** with a manual softmax. There is no fused or flash path.
+23. **Fixed** (PR #5, Phase 2 T3: one batched SDPA call). **Heads run in a Python loop** with a manual softmax. There is no fused or flash path.
 24. **Fixed** (PR #4). **Device-specific autocast and logging.** Autocast and GradScaler are hardcoded to
     `"cuda"`, and "Compiling model for GPU" is printed on every device.
 25. **Fixed** (PR #3). **`model_run.ipynb` cell 7** plots the old scalar `rel_bias` shape, so it's stale.
-26. **Checkpoints are ~3× larger than needed.** Each `RelativeHead` registers its causal mask
+26. **Fixed** (PR #5, Phase 2 T3: no buffers in the state dict). **Checkpoints are ~3× larger than needed.** Each `RelativeHead` registers its causal mask
     `tril` (`block_size²` floats) as a persistent buffer, so it's saved in every checkpoint:
     2048² × 4 B × 12 heads × 24 layers ≈ 4.8 GB of constant data. A 186M checkpoint is 6.7 GB
     instead of ~2.2 GB (weights + AdamW moments), and `save_every = 5` wrote ~80 GB to Drive in
-    the T5 baseline. Phase 2's SDPA attention removes the buffer; until then, prefer a larger
-    `save_every` and delete intermediate `epoch_N.pt` files once a run is done.
+    the T5 baseline. Phase 2's SDPA attention removes the buffer. Since Phase 2 T1, `--keep_last`
+    (default 2) caps the `epoch_NNN.pt` snapshots kept on disk.
+27. **Fixed** (PR #5, Phase 2). **`profile_report` overstates device time 2–3×** (`src/utils/train.py`,
+    `profile_report`). It summed `self_device_time_total` over every `key_averages()` event: torch
+    2.14 reports each kernel's time on the kernel and again on the CPU op that launched it, and adds
+    GPU-side spans for `record_function` regions and `ProfilerStep`. Result: "device busy 300% of
+    wall", and region shares understated. Now `device_kernel_time` sums device-side,
+    non-annotation events only. The 2026-11-08 baseline's 38% attention share and 32% busy came
+    from the old code.

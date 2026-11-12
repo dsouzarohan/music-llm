@@ -29,8 +29,12 @@ diffs readable.
     squash-merge. The PR title is the squash commit, so write it as a Conventional Commit.
 - **`docs/known-issues.md`** lists bugs with file:line. Tasks reference issues by number.
   When you fix one, mark it fixed there.
+- **`docs/learnings/`** holds plain-language notes on concepts, one file per concept, indexed in
+  its README. When the owner asks for a concept to be explained, offer to add or update a note.
 - **`docs/journal/`** is the dated project log, one file per entry. Add an entry when a session
   produces results worth remembering, such as a training run, a finding or a decision.
+  Write it in a relaxed, non-technical tone, but always cover testing, architecture, training
+  and inference numbers: see `docs/journal/AGENTS.md`.
 
 ## Harness principles
 
@@ -60,13 +64,13 @@ uv run jupyter lab           # playground notebooks (dev group, installed by def
 ## Layout
 
 ```
-src/model/model.py                        MusicTransformer, RelativeHead (+ unused Head)
+src/model/model.py                        MusicTransformer, Attention (Huang or RoPE), block switches
 src/utils/train.py                        training entry point: parse_args() + train(args)
 src/utils/checkpoint.py                   save_checkpoint / load_checkpoint (one schema)
 src/utils/config.py                       TOML run spec -> argparse defaults
 src/utils/metrics.py                      FLOPs/token, GPU peak FLOPs, MFU
 src/utils/hyperparameters.py              default hparams (CLI defaults for train.py)
-configs/*.toml                            run specs (smoke, colab-186m-jan2026)
+configs/*.toml                            run specs (smoke, colab-186m-jan2026, ablation-30m-*, t6-*)
 src/utils/midi_extractor.py               Lakh MIDI -> per-guitar-track .mid (music21)
 src/utils/tokenizer.py                    split -> augment -> train BPE -> tokenize to JSON
 src/utils/data/random_guitar_seq_dataset.py   default dataset: random windows
@@ -77,7 +81,9 @@ scripts/setup.sh                          uv sync --locked
 scripts/verify.sh                         the gate: pytest, including an end-to-end smoke train
 scripts/train.sh                          train from a config: scripts/train.sh <config.toml> [flags]
 scripts/smoke-train.sh                    configs/smoke.toml on a synthetic corpus
-scripts/colab.sh                          Colab session: new/setup/train/logs/status/fetch/stop
+scripts/colab.sh                          Colab session over SSH: new/setup/train/queue/logs/status/fetch/pull/ssh/stop
+scripts/sync-runs.sh                      copy run and log folders to Drive every N s while a job runs
+scripts/queue.sh                          run a queue file (configs/queues/*.txt): python -m commands in order
 .github/workflows/verify.yml              CI: setup.sh + verify.sh on ubuntu
 scripts/stats.sh                          grep/awk snippets for the extraction log (legacy, to be replaced; leave as is)
 docs/                                     plan, roadmap, architecture, journal; see docs/README.md
@@ -90,9 +96,10 @@ Run everything **from the repo root**. Modules import `src.*`, so `python -m` fr
 is the only invocation that resolves cleanly.
 
 ```bash
-# Train from a run spec; flags override it. Output goes to data/runs/<timestamp>-<name>/
+# Train from a run spec; flags override it. Output goes to data/runs/<YYYY-MM-DD>/<HHMM>-<name>/
+# (config.json, metrics.jsonl, checkpoints/{best,last,epoch_NNN}.pt)
 scripts/train.sh configs/smoke.toml --data_root data --vocab_size 3000
-scripts/train.sh configs/smoke.toml --resume data/runs/<run>/epoch_5.pt   # exact resume
+scripts/train.sh configs/smoke.toml --resume data/runs/<date>/<run>   # exact resume from checkpoints/last.pt
 
 # Real runs happen on Colab: see docs/colab.md
 scripts/colab.sh train configs/colab-186m-jan2026.toml
@@ -165,5 +172,5 @@ as representative, and don't "fix" it to match Drive.
   (post-T4 runs); earlier numbers used random val windows.
 - **Changes that invalidate checkpoints:** some architecture changes make old checkpoints
   unusable, for example init, activation, norm placement, or new parameters. Call that out
-  explicitly. The owner resumes runs from `best.pt`, so they need to know.
+  explicitly. The owner resumes runs from `last.pt` and samples from `best.pt`, so they need to know.
 - Keep `src/utils/hyperparameters.py` as the single source of CLI defaults.

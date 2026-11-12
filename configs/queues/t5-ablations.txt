@@ -1,0 +1,6 @@
+# Phase 2 T5: the five ~30M block ablations, one after another. Run dirs under $RUNS_DIR.
+src.utils.train --config configs/ablation-30m-1-old.toml --data_root $DATA_ROOT --runs_dir $RUNS_DIR
+src.utils.train --config configs/ablation-30m-2-rope.toml --data_root $DATA_ROOT --runs_dir $RUNS_DIR
+src.utils.train --config configs/ablation-30m-3-rope-rms-qk.toml --data_root $DATA_ROOT --runs_dir $RUNS_DIR
+src.utils.train --config configs/ablation-30m-4-rope-rms-qk-swiglu.toml --data_root $DATA_ROOT --runs_dir $RUNS_DIR
+src.utils.train --config configs/ablation-30m-5-modern.toml --data_root $DATA_ROOT --runs_dir $RUNS_DIR
