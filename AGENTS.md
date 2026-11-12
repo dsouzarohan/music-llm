@@ -33,6 +33,8 @@ diffs readable.
   its README. When the owner asks for a concept to be explained, offer to add or update a note.
 - **`docs/journal/`** is the dated project log, one file per entry. Add an entry when a session
   produces results worth remembering, such as a training run, a finding or a decision.
+  Write it in a relaxed, non-technical tone, but always cover testing, architecture, training
+  and inference numbers: see `docs/journal/AGENTS.md`.
 
 ## Harness principles
 
