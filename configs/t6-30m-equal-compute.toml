@@ -1,0 +1,23 @@
+# Phase 2 T6: the T5 winner (full modern block, 8L/512/8H, 22.8M params) on the 186M baseline's compute
+# budget: 237 MFLOP/token x 325 epochs x 2000 windows x 2048 = 1.33B tokens = 3.16e17 FLOPs. Needs the
+# Drive corpus (vocab 3500).
+name = "t6-30m-equal-compute"
+vocab_size = 3500
+block_size = 2048
+n_layer = 8
+n_head = 8
+embedding_dim = 512
+dropout = 0.1
+batch_size = 64
+micro_batch_size = 16
+learning_rate = 3e-4
+epochs = 325
+train_windows = 2000
+val_windows = 512
+save_every = 10
+keep_last = 1
+pos = "rope"
+norm = "rmsnorm"
+mlp = "swiglu"
+qk_norm = true
+tie_embeddings = true

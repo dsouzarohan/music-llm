@@ -68,7 +68,7 @@ src/utils/checkpoint.py                   save_checkpoint / load_checkpoint (one
 src/utils/config.py                       TOML run spec -> argparse defaults
 src/utils/metrics.py                      FLOPs/token, GPU peak FLOPs, MFU
 src/utils/hyperparameters.py              default hparams (CLI defaults for train.py)
-configs/*.toml                            run specs (smoke, colab-186m-jan2026, ablation-30m-*)
+configs/*.toml                            run specs (smoke, colab-186m-jan2026, ablation-30m-*, t6-*)
 src/utils/midi_extractor.py               Lakh MIDI -> per-guitar-track .mid (music21)
 src/utils/tokenizer.py                    split -> augment -> train BPE -> tokenize to JSON
 src/utils/data/random_guitar_seq_dataset.py   default dataset: random windows

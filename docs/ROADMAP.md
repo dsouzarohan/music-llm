@@ -34,9 +34,8 @@ Make the training code trustworthy and verifiable before changing what it does.
 
 Bring the block up to current practice and find out whether depth or data is the bottleneck.
 
-- Compute: move training to Lightning.ai (SSH, persistent disk). A generic `scripts/remote.sh`
-  over SSH (sync, launch detached, logs, fetch) plus `docs/lightning.md`; copy the corpus from
-  Drive once. Colab stays usable while its credits last.
+- Compute: Colab over SSH (`scripts/colab.sh`, queue files, Drive sync). Lightning.ai moved to
+  Phase 3: it couldn't create Studios during this phase.
 - Run layout by date (`runs/<date>/<time>-<name>/checkpoints/{best,last}.pt`), snapshot
   retention and atomic saves.
 - RoPE in place of absolute pos-emb + skewed `rel_bias`; `scaled_dot_product_attention` on
@@ -54,6 +53,10 @@ Bring the block up to current practice and find out whether depth or data is the
 ## 3. Data at scale
 
 Grow the corpus 20–40× and measure what each source contributes.
+
+- Compute: move training and extraction to Lightning.ai (SSH, persistent disk), moved here from
+  Phase 2 T2, whose spec is in git history (`docs/PLAN.md`, Phase 2). A generic `scripts/remote.sh`
+  with `colab.sh`'s verbs, plus `docs/lightning.md`; copy the corpus from Drive once.
 
 - Extraction on symusic using GM program numbers, replacing music21 name matching. Replace
   `scripts/stats.sh` with a scripted data report.

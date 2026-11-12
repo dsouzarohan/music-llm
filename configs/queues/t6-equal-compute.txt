@@ -1,0 +1,3 @@
+# Phase 2 T6: small vs big at the baseline's compute (~3.16e17 FLOPs each). Run dirs under $RUNS_DIR.
+src.utils.train --config configs/t6-30m-equal-compute.toml --data_root $DATA_ROOT --runs_dir $RUNS_DIR
+src.utils.train --config configs/t6-186m-equal-compute.toml --data_root $DATA_ROOT --runs_dir $RUNS_DIR

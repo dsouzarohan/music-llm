@@ -6,7 +6,7 @@ one PR. Phase 1's plan is in git history (PRs #2–#4).
 **Story:** bring the model up to current practice and find out whether model size or data is
 the bottleneck. After this phase:
 
-- runs happen on Lightning.ai over SSH, from one script, into a tidy run layout;
+- runs land in a tidy, dated run layout (Lightning.ai moved to Phase 3, Decision 12);
 - attention is one batched SDPA call, with no per-head loop and no mask buffers in checkpoints;
 - the block is chosen by measurement (ablations at ~30M), not by habit;
 - sampling is fast enough to listen to many samples (KV cache);
@@ -70,6 +70,12 @@ Made while planning (2026-11-08). Revisit here, not silently in code.
     the T5/T6 runs use `scripts/colab.sh` (A100 40GB), with `scripts/queue.sh` running queue files
     from `configs/queues/` unattended. T2 stays open for when Lightning is back; nothing else
     depends on it.
+12. **T2 moves out of Phase 2** (2026-11-12). Lightning still can't create Studios, and with
+    Decision 11 nothing in this phase needs it. It goes to Phase 3 (`docs/ROADMAP.md`), where the
+    data work needs a persistent disk anyway. T3's and T4's GPU items were measured on Colab instead.
+13. **T6 adds a 186M-shape run** (2026-11-12). T5 run 1 beat the 186M baseline by 0.81 with the
+    same block, so the baseline is undertrained and comparing against 3.498 mostly measures its
+    settings. T6 trains both sizes with the modern block and the T5 settings at equal compute.
 
 ---
 
@@ -100,7 +106,7 @@ A chore, done first so every run in this phase uses it.
 
 ## T2 · Lightning.ai setup
 
-**Status:** todo
+**Status:** moved to Phase 3 (Decision 12). Kept here as the spec to start from.
 
 - Owner: create a Studio, add the SSH key, note the host alias. Pick the GPU per run
   (L40S / A100 / H100); MFU uses the detected GPU's peak.
@@ -123,7 +129,7 @@ A chore, done first so every run in this phase uses it.
 
 ## T3 · Batched attention and the modern block
 
-**Status:** in progress (code done; the GPU profile waits for T2)
+**Status:** done
 
 Rewrite attention, then add the modern pieces behind switches.
 
@@ -156,13 +162,15 @@ Rewrite attention, then add the modern pieces behind switches.
 - [x] A 186M checkpoint is ≈2.2 GB (no mask buffers): 186.4M fp32 weights (0.75 GB) + AdamW's
       two moments (1.49 GB) = 2.24 GB; `test_checkpoint_has_no_buffers` checks the state dict
       holds parameters only.
-- [ ] Eager profile at micro-batch 2 shows attention's share of device time well below 38%;
-      tokens/s and MFU recorded for both `pos` modes.
+- [x] Eager profile at micro-batch 2 shows attention's share of device time well below 38%;
+      tokens/s and MFU recorded for both `pos` modes. (Colab A100, `docs/journal/2026-11-12.md`.
+      The shares were broken, #27, so this compares absolute attention forward time: 1,615 ms →
+      749 ms Huang, 125 ms RoPE. Compiled: 22.2k → 31.9k tok/s Huang, 101.8k RoPE, MFU 43.0%.)
 - [x] `scripts/verify.sh` is green.
 
 ## T4 · KV cache
 
-**Status:** in progress (code done; the GPU timing waits for T2)
+**Status:** done
 
 - Per-layer K/V cache in `generate()`: process the prompt once, then one token per step.
 - Works for both `pos` modes (Huang bias for one query row; RoPE at the token's position).
@@ -176,14 +184,16 @@ Rewrite attention, then add the modern pieces behind switches.
 - [x] Test: cached and uncached greedy decoding produce identical tokens, both `pos` modes,
       including across the `block_size` boundary. (`test_cached_and_uncached_greedy_decoding_match`
       for all six block variants, plus per-step logits vs a full forward.)
-- [ ] A 512-token sample from a 186M-shape model takes seconds instead of ~108 s on the
-      Lightning GPU (recorded in the journal). Local reference, random-init 186M shape on an
+- [x] A 512-token sample from a 186M-shape model takes seconds instead of ~108 s on the
+      Lightning GPU (recorded in the journal). (Colab A100: ~12 s with or without the cache. The
+      speedup is T3's batched heads; at this length the A100 is launch-bound and the cache doesn't
+      show. `docs/journal/2026-11-12.md`.) Local reference, random-init 186M shape on an
       M-series Mac (MPS, fp32), 64-token prompt + 256 tokens: Huang 8.5 → 2.6 s, RoPE 6.1 → 2.2 s.
 - [x] `scripts/verify.sh` is green.
 
 ## T5 · Block ablations at ~30M
 
-**Status:** todo
+**Status:** in progress (runs and default done; the probe is left)
 
 - `configs/ablation-30m-{1..5}-*.toml`: 8 layers, 512 dim, 8 heads, context 2048 (Decision 9),
   dropout 0.1, batch 64 (micro 16), peak LR 3e-4, 50 epochs × 2000 windows = 204.8M tokens
@@ -205,20 +215,29 @@ Rewrite attention, then add the modern pieces behind switches.
 
 **Acceptance:**
 
-- [ ] All five runs logged in a journal entry with val loss, ppl, tokens/s and MFU.
-- [ ] The chosen block is the default, with the decision and its numbers in the journal.
+- [x] All five runs logged in a journal entry with val loss, ppl, tokens/s and MFU.
+      (`docs/journal/2026-11-12.md`: 2.684 old block → 2.323 full modern block.)
+- [x] The chosen block is the default, with the decision and its numbers in the journal.
+      (Run 5, the full modern block. `colab-186m-jan2026.toml` and `ablation-30m-1-old.toml` pin
+      the old block.)
 - [ ] Frequency-band probe results in the journal.
 
 ## T6 · Small vs big at equal compute
 
-**Status:** todo
+**Status:** todo (configs ready; needs a Colab A100 session, ~1½ h)
 
-- Train the chosen ~30M block on the baseline's compute budget (≈3.16e17 FLOPs by
-  `metrics.flops_per_token`; ≈1.3B tokens for the full modern block at 237 MFLOP/token, ~27
-  passes over the corpus).
-- Compare with 3.498. Watch the train/val gap: repeating the data ~24× may overfit, which is
-  itself the answer to "is data the bottleneck".
-- Sample with `sample.py` (KV cache) and record grammar error rates.
+Both runs use the full modern block, the T5 settings (dropout 0.1, batch 64, peak LR 3e-4) and the
+baseline's compute budget, ≈3.16e17 FLOPs by `metrics.flops_per_token` (Decision 13). Queue:
+`configs/queues/t6-equal-compute.txt`.
+
+- **Small, long:** `configs/t6-30m-equal-compute.toml`. 8L/512/8H, 22.8M params, 237 MFLOP/token,
+  325 epochs × 2000 windows = 1.33B tokens, ~31 passes over the corpus. ~50 min at T5's 460k tok/s.
+- **Big, short:** `configs/t6-186m-equal-compute.toml`. 24L/768/12H, 144.4M params, 1,318
+  MFLOP/token, 59 epochs = 242M tokens. ~40 min at ~100k tok/s.
+- Compare the two at equal FLOPs, and each with 3.498. Watch the 30M run's train/val gap: T5 already
+  showed it widening at ~5 passes, so val loss may bottom out and rise, which would say data is the
+  bottleneck. `best.pt` keeps the best epoch either way.
+- Sample both with `sample.py` (KV cache) and record grammar error rates.
 
 **Acceptance:**
 
@@ -229,5 +248,5 @@ Rewrite attention, then add the modern pieces behind switches.
 
 ---
 
-**Story done when:** T1–T6 are done, `scripts/verify.sh` is green in CI, #22, #23 and #26 are
-marked fixed, and the docs describe the new block and the Lightning workflow.
+**Story done when:** T1 and T3–T6 are done (T2 moved to Phase 3), `scripts/verify.sh` is green in
+CI, #22, #23, #26 and #27 are marked fixed, and the docs describe the new block.
